@@ -21,6 +21,35 @@ runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
 | `service/` | `daedalus.service` | `service.query` / `service.list` | `objectmodel`、`state`、`dirs` | systemd 单元只读观测;唯一声明 `resources`(`kind: service`)的官方插件;状态变更一律走 `daedalus-tx` |
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy`(post_check 钩子) | 6 个参数化配置蓝图(nginx/postgres/redis/haproxy);数据经 `//go:embed` 编入二进制,源码侧 `blueprints/` 是唯一事实源 |
 
+## 命名语义(目录名 ≠ 系统组件,是"能力提供者")
+
+> 用户反馈"命名容易让人摸不着头脑"——`shell/` 不是 shell 本身,`service/` 不是
+> systemd 服务。本节澄清两个标识符的分工。
+
+每个插件有**两个名字**,职责不同、互不替代:
+
+| 标识符 | 例子 | 性质 | 用途 |
+|--------|------|------|------|
+| **目录名 / id**(技术标识符) | `shell/`、`daedalus.shell` | **稳定、机器可解析** | systemd 单元名、CI、import 路径、copilot 硬编码引用、`daedalus-host` 发现/校验——**改动即破坏全链路** |
+| **`name` 字段**(显示名) | `Daedalus Command Execution` | **人类可读、可自由演进** | `daedalus-host list` / `inspect` 展示、UI 呈现——只影响展示,不影响任何机器行为 |
+
+**目录名是技术标识符,`name` 是显示名,两者分离的原因**:技术标识符一旦发布就被
+systemd 单元、CI、import 路径、copilot 硬编码引用锁定,改名成本极高且无功能收益;
+显示名则随时可以按"能力语义"调整,让人类一眼看懂这个插件**提供什么能力**。
+
+6 个插件目录名 → 实际能力对照(目录名 ≠ 系统组件):
+
+| 目录名 / id | 显示名(`name`) | 实际能力(不是……) |
+|-------------|----------------|--------------------|
+| `fs/` (`daedalus.fs`) | Daedalus Filesystem Access | 路径作用域文件读写能力——**不是**文件系统本身 |
+| `shell/` (`daedalus.shell`) | Daedalus Command Execution | 受控命令执行能力(15 命令白名单沙箱)——**不是** shell 解释器 |
+| `pkg/` (`daedalus.pkg`) | Daedalus Package Query | dnf/rpm 只读包查询能力——**不是**包管理器 |
+| `sysinfo/` (`daedalus.sysinfo`) | Daedalus System Information | 只读系统信息探测能力 |
+| `service/` (`daedalus.service`) | Daedalus Service Query | 只读服务状态查询能力——**不是** systemd 服务,也不改服务状态(状态变更走 `daedalus-tx`) |
+| `blueprint/` (`daedalus.blueprint`) | Daedalus Blueprint | 参数化配置蓝图渲染/应用能力 |
+
+**约定**:目录名与 id 永不改;显示名 `name` 按"XX 能力"语义命名,改动只影响展示层。
+
 ## 目录布局(以 `fs/` 为例)
 
 ```

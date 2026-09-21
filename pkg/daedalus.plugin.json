@@ -1,6 +1,6 @@
 {
   "id": "daedalus.pkg",
-  "name": "Daedalus Package",
+  "name": "Daedalus Package Query",
   "version": "0.1.0",
   "api_version": "0.1.0",
   "license": "Apache-2.0",

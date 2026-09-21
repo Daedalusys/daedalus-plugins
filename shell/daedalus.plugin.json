@@ -1,6 +1,6 @@
 {
   "id": "daedalus.shell",
-  "name": "Daedalus Shell",
+  "name": "Daedalus Command Execution",
   "version": "0.1.0",
   "api_version": "0.1.0",
   "license": "Apache-2.0",
