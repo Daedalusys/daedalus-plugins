@@ -1,11 +1,12 @@
-// daedalus-fs 的行为测试:用 NewInMemoryTransports 做真实 MCP 握手,
-// 断言 tools/list 与 ts 规格一致,并端到端验证 4 个工具的白名单语义。
+// daedalus-dupe 的行为测试:直接驱动 scanLarge / scanDupes / applyPolicy 入口,
+// 用真实临时目录演练三种查重算法、top_n 截断、min_size 过滤、pathguard 拒绝、
+// ctx 取消与策略 fail-closed;另经内存内 MCP 握手钉死 tools/list 注册形态。
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,7 +20,9 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
 
-// connectSession 按 cmd/daedalus-smoke 实证形态建立内存内客户端/服务器会话,
+// —— 基础设施:内存内 MCP 会话与临时目录 ——
+
+// connectSession 建立内存内客户端/服务器会话(镜像 fs 插件测试形态),
 // 并在测试结束校验服务器随连接关闭而优雅退出。
 func connectSession(t *testing.T) (*mcp.ClientSession, context.Context) {
 	t.Helper()
@@ -32,7 +35,7 @@ func connectSession(t *testing.T) (*mcp.ClientSession, context.Context) {
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(ctx, serverTransport) }()
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "fs-test-client", Version: "0.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "dupe-test-client", Version: "0.0.0"}, nil)
 	session, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("MCP 握手失败: %v", err)
@@ -48,119 +51,77 @@ func connectSession(t *testing.T) (*mcp.ClientSession, context.Context) {
 	return session, ctx
 }
 
-// callToolText 调用工具并返回 (结果, 首个文本块内容)。
-func callToolText(t *testing.T, session *mcp.ClientSession, ctx context.Context, tool string, args map[string]any) (*mcp.CallToolResult, string) {
-	t.Helper()
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
-	if err != nil {
-		t.Fatalf("tools/call %s 传输失败: %v", tool, err)
-	}
-	if len(res.Content) == 0 {
-		t.Fatalf("tools/call %s 无内容块", tool)
-	}
-	text, ok := res.Content[0].(*mcp.TextContent)
-	if !ok {
-		t.Fatalf("tools/call %s 回包非文本: %T", tool, res.Content[0])
-	}
-	return res, text.Text
-}
-
-// wantAnnotation 是 tools/list 注解断言的期望值(逐字对齐 fs_server.ts:224-297)。
-type wantAnnotation struct {
-	name        string
-	description string
-	readOnly    bool
-	destructive bool
-	idempotent  bool
-	openWorld   bool
-	required    []string
-	properties  []string
-}
-
-// TestToolsList_MatchesDenoSpec 断言工具数量、名称、描述、注解与参数 schema。
-func TestToolsList_MatchesDenoSpec(t *testing.T) {
+// TestToolsList_RegistersTwoReadOnlyTools 断言只注册 2 个只读工具,
+// 注解形态与 manifest 的 tools 列表一致;可选参数经 omitempty 推断为非必填。
+func TestToolsList_RegistersTwoReadOnlyTools(t *testing.T) {
 	session, ctx := connectSession(t)
 	res, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("tools/list 失败: %v", err)
 	}
-	if len(res.Tools) != 4 {
-		t.Fatalf("工具数量 = %d, want 4", len(res.Tools))
+	if len(res.Tools) != 2 {
+		t.Fatalf("工具数量 = %d, want 2", len(res.Tools))
 	}
 
-	wants := []wantAnnotation{
-		{
-			name: "read_file", description: "Read text content from a file within allowed directories (/home, /var/log, /tmp).",
-			readOnly: true, destructive: false, idempotent: true, openWorld: false,
-			required: []string{"path"}, properties: []string{"path"},
-		},
-		{
-			name: "write_file", description: "Write or overwrite text content to a file within allowed directories (/home, /var/log, /tmp). Automatically creates parent directories if they do not exist.",
-			readOnly: false, destructive: true, idempotent: true, openWorld: false,
-			required: []string{"path", "content"}, properties: []string{"content", "path"},
-		},
-		{
-			name: "list_dir", description: "List contents of a directory within allowed directories (/home, /var/log, /tmp).",
-			readOnly: true, destructive: false, idempotent: true, openWorld: false,
-			required: []string{"path"}, properties: []string{"path"},
-		},
-		{
-			name: "move_file", description: "Move or rename a file or directory within allowed directories (/home, /var/log, /tmp). Both source and destination must be strictly inside the allowed whitelist.",
-			readOnly: false, destructive: true, idempotent: false, openWorld: false,
-			required: []string{"src", "dst"}, properties: []string{"dst", "src"},
-		},
+	wantRequired := map[string][]string{
+		"scan_large": {"dir"},
+		"scan_dupes": {"algo", "dirs"},
+	}
+	wantProperties := map[string][]string{
+		"scan_large": {"dir", "min_size", "top_n"},
+		"scan_dupes": {"algo", "dirs", "min_size"},
 	}
 
 	byName := map[string]*mcp.Tool{}
 	for _, tool := range res.Tools {
 		byName[tool.Name] = tool
 	}
-	for _, want := range wants {
-		tool, ok := byName[want.name]
+	for name, required := range wantRequired {
+		tool, ok := byName[name]
 		if !ok {
-			t.Errorf("缺少工具 %q", want.name)
+			t.Errorf("缺少工具 %q", name)
 			continue
-		}
-		if tool.Description != want.description {
-			t.Errorf("%s 描述漂移:\n got %q\nwant %q", want.name, tool.Description, want.description)
 		}
 		a := tool.Annotations
 		if a == nil {
-			t.Fatalf("%s 无 Annotations", want.name)
+			t.Fatalf("%s 无 Annotations", name)
 		}
-		if a.ReadOnlyHint != want.readOnly {
-			t.Errorf("%s readOnlyHint = %v, want %v", want.name, a.ReadOnlyHint, want.readOnly)
+		if !a.ReadOnlyHint {
+			t.Errorf("%s readOnlyHint = false, want true(L0 只读)", name)
 		}
-		if a.DestructiveHint == nil || *a.DestructiveHint != want.destructive {
-			t.Errorf("%s destructiveHint = %v, want %v", want.name, a.DestructiveHint, want.destructive)
+		if a.DestructiveHint == nil || *a.DestructiveHint {
+			t.Errorf("%s destructiveHint 应为显式 false: %v", name, a.DestructiveHint)
 		}
-		if a.IdempotentHint != want.idempotent {
-			t.Errorf("%s idempotentHint = %v, want %v", want.name, a.IdempotentHint, want.idempotent)
+		if !a.IdempotentHint {
+			t.Errorf("%s idempotentHint = false, want true", name)
 		}
-		if a.OpenWorldHint == nil || *a.OpenWorldHint != want.openWorld {
-			t.Errorf("%s openWorldHint = %v, want %v", want.name, a.OpenWorldHint, want.openWorld)
+		if a.OpenWorldHint == nil || *a.OpenWorldHint {
+			t.Errorf("%s openWorldHint 应为显式 false: %v", name, a.OpenWorldHint)
 		}
 
 		schema, ok := tool.InputSchema.(map[string]any)
 		if !ok {
-			t.Fatalf("%s inputSchema 类型异常: %T", want.name, tool.InputSchema)
+			t.Fatalf("%s inputSchema 类型异常: %T", name, tool.InputSchema)
 		}
-		wantRequired := slices.Clone(want.required)
-		slices.Sort(wantRequired)
-		if got := schemaStringSlice(schema, "required"); !slices.Equal(got, wantRequired) {
-			t.Errorf("%s required = %v, want %v", want.name, got, wantRequired)
+		gotRequired := schemaStringSlice(schema, "required")
+		wantSorted := slices.Clone(required)
+		slices.Sort(wantSorted)
+		if !slices.Equal(gotRequired, wantSorted) {
+			t.Errorf("%s required = %v, want %v", name, gotRequired, wantSorted)
 		}
 		props, ok := schema["properties"].(map[string]any)
 		if !ok {
-			t.Fatalf("%s properties 缺失: %v", want.name, schema["properties"])
+			t.Fatalf("%s properties 缺失: %v", name, schema["properties"])
 		}
 		names := make([]string, 0, len(props))
 		for k := range props {
 			names = append(names, k)
 		}
 		slices.Sort(names)
-		if !slices.Equal(names, want.properties) {
-			t.Errorf("%s properties = %v, want %v", want.name, names, want.properties)
+		wantProps := slices.Clone(wantProperties[name])
+		slices.Sort(wantProps)
+		if !slices.Equal(names, wantProps) {
+			t.Errorf("%s properties = %v, want %v", name, names, wantProps)
 		}
 	}
 }
@@ -181,139 +142,10 @@ func schemaStringSlice(schema map[string]any, key string) []string {
 	return out
 }
 
-func TestReadFile_InsideAllowlist(t *testing.T) {
-	session, ctx := connectSession(t)
-	base := mustTempDir(t)
-	file := filepath.Join(base, "hello.txt")
-	if err := os.WriteFile(file, []byte("hello daedalus"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": file})
-	if res.IsError {
-		t.Fatalf("read_file 白名单内文件失败: %s", text)
-	}
-	if text != "hello daedalus" {
-		t.Errorf("内容 = %q, want %q", text, "hello daedalus")
-	}
-}
-
-func TestReadFile_OutsideAllowlist(t *testing.T) {
-	session, ctx := connectSession(t)
-	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": "/etc/shadow"})
-	if !res.IsError {
-		t.Fatalf("/etc/shadow 竟然读取成功: %q", text)
-	}
-	if !strings.HasPrefix(text, "Error: ") || !strings.Contains(text, "outside allowed directories") {
-		t.Errorf("错误形态漂移(应 Error: 前缀 + outside): %q", text)
-	}
-}
-
-func TestReadFile_SymlinkEscape(t *testing.T) {
-	session, ctx := connectSession(t)
-	base := mustTempDir(t)
-	link := filepath.Join(base, "escape")
-	if err := os.Symlink("/etc", link); err != nil {
-		t.Fatal(err)
-	}
-	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": filepath.Join(link, "passwd")})
-	if !res.IsError || !strings.Contains(text, "outside allowed directories") {
-		t.Errorf("symlink 逃逸未被拦截: isError=%v text=%q", res.IsError, text)
-	}
-}
-
-func TestReadFile_DirectoryTarget(t *testing.T) {
-	session, ctx := connectSession(t)
-	base := mustTempDir(t)
-	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": base})
-	if !res.IsError || !strings.Contains(text, "Target is a directory, not a file") {
-		t.Errorf("目录目标错误形态漂移: isError=%v text=%q", res.IsError, text)
-	}
-}
-
-// TestWriteFile_MkdirListMove 覆盖 write_file 建父目录、UTF-16 计数、
-// list_dir 的 JSON 数组形态与排序、move_file 的完整闭环。
-func TestWriteFile_MkdirListMove(t *testing.T) {
-	session, ctx := connectSession(t)
-	base := mustTempDir(t)
-
-	nested := filepath.Join(base, "sub", "deep", "a.txt")
-	res, text := callToolText(t, session, ctx, "write_file", map[string]any{"path": nested, "content": "abc"})
-	if res.IsError {
-		t.Fatalf("write_file 失败: %s", text)
-	}
-	if want := fmt.Sprintf("Successfully wrote 3 characters to %s", nested); text != want {
-		t.Errorf("write 消息 = %q, want %q", text, want)
-	}
-
-	// 非 BMP 字符占 2 个 UTF-16 码元(ts content.length 语义):🙂=2 + "ab"=2 → 4。
-	emoji := filepath.Join(base, "b.txt")
-	_, text = callToolText(t, session, ctx, "write_file", map[string]any{"path": emoji, "content": "🙂ab"})
-	if want := fmt.Sprintf("Successfully wrote 4 characters to %s", emoji); text != want {
-		t.Errorf("UTF-16 计数消息 = %q, want %q", text, want)
-	}
-
-	res, text = callToolText(t, session, ctx, "list_dir", map[string]any{"path": filepath.Join(base, "sub", "deep")})
-	if res.IsError {
-		t.Fatalf("list_dir 失败: %s", text)
-	}
-	var wantJSON, gotJSON []byte
-	wantJSON, _ = json.MarshalIndent([]string{"a.txt"}, "", "  ")
-	gotJSON = []byte(text)
-	if string(gotJSON) != string(wantJSON) {
-		t.Errorf("list_dir 输出 = %q, want %q", text, wantJSON)
-	}
-
-	dst := filepath.Join(base, "moved.txt")
-	res, text = callToolText(t, session, ctx, "move_file", map[string]any{"src": nested, "dst": dst})
-	if res.IsError {
-		t.Fatalf("move_file 失败: %s", text)
-	}
-	if want := fmt.Sprintf("Successfully moved %s to %s", nested, dst); text != want {
-		t.Errorf("move 消息 = %q, want %q", text, want)
-	}
-	if _, err := os.Stat(nested); !os.IsNotExist(err) {
-		t.Errorf("源文件仍存在: %v", err)
-	}
-	data, err := os.ReadFile(dst)
-	if err != nil || string(data) != "abc" {
-		t.Errorf("目标文件内容异常: %q, %v", data, err)
-	}
-}
-
-func TestWriteFile_RejectedOutside(t *testing.T) {
-	session, ctx := connectSession(t)
-	res, text := callToolText(t, session, ctx, "write_file", map[string]any{"path": "/etc/daedalus_evil", "content": "x"})
-	if !res.IsError || !strings.Contains(text, "outside allowed directories") {
-		t.Errorf("越界写入未被拦截: isError=%v text=%q", res.IsError, text)
-	}
-	if _, err := os.Stat("/etc/daedalus_evil"); !os.IsNotExist(err) {
-		t.Error("/etc 下出现了不应存在的文件")
-	}
-}
-
-// TestNullByteAndMissingArgs 覆盖畸形输入:null 字节路径与缺失必填参数。
-func TestNullByteAndMissingArgs(t *testing.T) {
-	session, ctx := connectSession(t)
-
-	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": "/tmp/a\x00b"})
-	if !res.IsError || !strings.Contains(text, "null bytes are forbidden") {
-		t.Errorf("null 字节未被拦截: isError=%v text=%q", res.IsError, text)
-	}
-
-	// 缺失 required=path:SDK schema 校验层拦截,同样以 isError 结果返回。
-	res, text = callToolText(t, session, ctx, "read_file", map[string]any{})
-	if !res.IsError {
-		t.Errorf("缺失 path 竟然成功: %q", text)
-	}
-	if !strings.Contains(text, "path") {
-		t.Errorf("缺失参数错误消息未提及 path: %q", text)
-	}
-}
-
-// mustTempDir 在 fs 白名单目录 /tmp 下创建隔离临时目录并注册清理。
+// mustTempDir 在白名单目录 /tmp 下创建隔离临时目录并注册清理。
 func mustTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "daedalus-fs-test-*")
+	dir, err := os.MkdirTemp("/tmp", "daedalus-dupe-test-*")
 	if err != nil {
 		t.Fatalf("创建临时目录失败: %v", err)
 	}
@@ -325,73 +157,432 @@ func mustTempDir(t *testing.T) string {
 	return real
 }
 
-// —— policy.toml 单一事实源接线测试(计划 todo 12)——
-// 经 DAEDALUS_POLICY_PATH 指向 testdata 后调用 applyPolicy,
-// 断言 [fs].allowed_dirs 逐字进入 pathguard 并在真实 MCP 往返中生效。
-
-// TestPolicyInjection_FollowsPolicyToml 证明策略注入端到端生效:
-// testdata 把白名单收缩为仅 /tmp 后,/tmp 放行、/var/log 与 /etc 被拒,
-// 且拒绝消息回显的是策略白名单(证明校验器读的是注入值而非常量)。
-func TestPolicyInjection_FollowsPolicyToml(t *testing.T) {
+// ensureDefaultAllowlist 把白名单固定为内置默认值,隔离策略类测试的全局注入,
+// 并在用例结束恢复原值,保证扫描类测试可独立复跑。
+func ensureDefaultAllowlist(t *testing.T) {
+	t.Helper()
 	orig := slices.Clone(pathguard.AllowedDirs)
+	pathguard.WithAllowedDirs([]string{"/home", "/var/log", "/tmp"})
 	t.Cleanup(func() { pathguard.WithAllowedDirs(orig) })
+}
 
-	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "policy.toml"))
-	if err := applyPolicy(); err != nil {
-		t.Fatalf("applyPolicy 加载 testdata 策略失败: %v", err)
+// writeSizedFile 在 dir 下创建 name,内容为 size 字节(体积是唯一断言对象)。
+func writeSizedFile(t *testing.T, dir, name string, size int) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", size)), 0o644); err != nil {
+		t.Fatalf("创建测试文件 %s 失败: %v", path, err)
 	}
-	if !slices.Equal(pathguard.AllowedDirs, []string{"/tmp"}) {
-		t.Fatalf("allowed_dirs 未注入: %v", pathguard.AllowedDirs)
-	}
+	return path
+}
 
-	session, ctx := connectSession(t)
+// writeFileContent 在 dir 下创建 name,写入逐字内容。
+func writeFileContent(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("创建测试文件 %s 失败: %v", path, err)
+	}
+	return path
+}
+
+// resultText 取出单文本块内容;工具错误同样以 text 承载。
+func resultText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) != 1 {
+		t.Fatalf("结果内容块数量 = %d, want 1", len(res.Content))
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("结果内容块类型 = %T, want *mcp.TextContent", res.Content[0])
+	}
+	return text.Text
+}
+
+// decodeEntries 把 scan_large 的 JSON 文本解码为 largeEntry 列表。
+func decodeEntries(t *testing.T, res *mcp.CallToolResult) []largeEntry {
+	t.Helper()
+	var entries []largeEntry
+	if err := json.Unmarshal([]byte(resultText(t, res)), &entries); err != nil {
+		t.Fatalf("scan_large 输出不是合法 JSON: %v", err)
+	}
+	return entries
+}
+
+// decodeGroups 把 scan_dupes 的 JSON 文本解码为 dupeGroup 列表。
+func decodeGroups(t *testing.T, res *mcp.CallToolResult) []dupeGroup {
+	t.Helper()
+	var groups []dupeGroup
+	if err := json.Unmarshal([]byte(resultText(t, res)), &groups); err != nil {
+		t.Fatalf("scan_dupes 输出不是合法 JSON: %v", err)
+	}
+	return groups
+}
+
+// —— scan_large ——
+
+func TestScanLarge_TopN(t *testing.T) {
+	ensureDefaultAllowlist(t)
 	base := mustTempDir(t)
-	file := filepath.Join(base, "p.txt")
-	if res, text := callToolText(t, session, ctx, "write_file", map[string]any{"path": file, "content": "ok"}); res.IsError {
-		t.Fatalf("注入 /tmp-only 后写 /tmp 应放行: %s", text)
+
+	sizes := map[string]int{"a.txt": 10, "b.txt": 20, "c.txt": 30, "d.txt": 40, "e.txt": 50}
+	for name, size := range sizes {
+		writeSizedFile(t, base, name, size)
 	}
 
-	res, text := callToolText(t, session, ctx, "list_dir", map[string]any{"path": "/var/log"})
-	if !res.IsError || !strings.Contains(text, "outside allowed directories") {
-		t.Fatalf("注入 /tmp-only 后 /var/log 应被拒: isError=%v text=%q", res.IsError, text)
+	res, _, err := scanLarge(context.Background(), nil, ScanLargeInput{Dir: base, TopN: 3})
+	if err != nil {
+		t.Fatalf("scan_large 返回错误: %v", err)
 	}
-	// 拒绝消息的白名单回显必须来自注入值(现状默认回显含 /home、/var/log)。
-	if !strings.Contains(text, "outside allowed directories (/tmp)") {
-		t.Errorf("拒绝消息未回显策略白名单 /tmp: %q", text)
+	if res.IsError {
+		t.Fatalf("scan_large 工具错误: %s", resultText(t, res))
 	}
-	if strings.Contains(text, "/home") {
-		t.Errorf("拒绝消息仍含未注入的默认目录(校验器读了常量而非策略): %q", text)
+
+	entries := decodeEntries(t, res)
+	if len(entries) != 3 {
+		t.Fatalf("top_n=3 应返回 3 条, got %d: %+v", len(entries), entries)
+	}
+	wantOrder := []string{"e.txt", "d.txt", "c.txt"}
+	for i, entry := range entries {
+		name := filepath.Base(entry.Path)
+		if name != wantOrder[i] {
+			t.Errorf("第 %d 条 = %s, want %s(应按体积降序)", i, name, wantOrder[i])
+		}
+		if entry.Size != int64(sizes[wantOrder[i]]) {
+			t.Errorf("%s size = %d, want %d", name, entry.Size, sizes[wantOrder[i]])
+		}
+		if entry.Type != "file" {
+			t.Errorf("%s type = %q, want %q", name, entry.Type, "file")
+		}
+		if _, err := time.Parse(time.RFC3339, entry.MTime); err != nil {
+			t.Errorf("%s mtime 不是 RFC3339: %q", name, entry.MTime)
+		}
+	}
+	if entries[0].Size < entries[1].Size || entries[1].Size < entries[2].Size {
+		t.Errorf("结果未按体积降序: %+v", entries)
+	}
+
+	// 同一目录不截断时 5 个文件全部返回,证明是 top_n 截断而非漏扫。
+	res, _, err = scanLarge(context.Background(), nil, ScanLargeInput{Dir: base})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_large 默认 top_n 调用失败: err=%v res=%v", err, res)
+	}
+	if all := decodeEntries(t, res); len(all) != 5 {
+		t.Errorf("默认 top_n 应返回全部 5 个文件, got %d", len(all))
 	}
 }
 
-// TestPolicyInjection_CorruptRefusesStartup 钉死 fail-closed:
-// 损坏 TOML → applyPolicy 报错(main 据此拒绝启动)。
-func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
+func TestScanLarge_MinSize(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+
+	for _, name := range []string{"s1.bin", "s2.bin", "s3.bin", "s4.bin"} {
+		writeSizedFile(t, base, name, 100)
+	}
+	const oneMiB = 1 << 20
+	large := map[string]int{
+		"l1.bin": oneMiB + 1,
+		"l2.bin": oneMiB + 1024,
+		"l3.bin": 2 * oneMiB,
+	}
+	for name, size := range large {
+		writeSizedFile(t, base, name, size)
+	}
+
+	res, _, err := scanLarge(context.Background(), nil, ScanLargeInput{Dir: base, MinSize: oneMiB})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_large 失败: err=%v res=%v", err, res)
+	}
+	entries := decodeEntries(t, res)
+	if len(entries) != 3 {
+		t.Fatalf("min_size=1MiB 应只返回 3 个达标文件, got %d: %+v", len(entries), entries)
+	}
+	for _, entry := range entries {
+		if entry.Size < oneMiB {
+			t.Errorf("%s size = %d, 低于 min_size 却出现在结果中", entry.Path, entry.Size)
+		}
+		if want, ok := large[filepath.Base(entry.Path)]; !ok || int64(want) != entry.Size {
+			t.Errorf("意外条目 %s(size=%d)", entry.Path, entry.Size)
+		}
+	}
+}
+
+func TestScanLarge_EmptyDir(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+
+	res, _, err := scanLarge(context.Background(), nil, ScanLargeInput{Dir: base})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_large 空目录失败: err=%v res=%v", err, res)
+	}
+	if text := resultText(t, res); text != "[]" {
+		t.Errorf("空目录输出 = %q, want %q", text, "[]")
+	}
+	if entries := decodeEntries(t, res); len(entries) != 0 {
+		t.Errorf("空目录应返回空列表, got %+v", entries)
+	}
+}
+
+func TestScanLarge_PathGuardRejectsRoot(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	res, _, err := scanLarge(context.Background(), nil, ScanLargeInput{Dir: "/etc"})
+	if err != nil {
+		t.Fatalf("pathguard 拒绝应以工具错误返回,而非传输错误: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("/etc 竟然通过白名单: %s", resultText(t, res))
+	}
+	text := resultText(t, res)
+	if !strings.HasPrefix(text, "Error: ") || !strings.Contains(text, "outside allowed directories") {
+		t.Errorf("pathguard 错误形态漂移: %q", text)
+	}
+}
+
+func TestScanLarge_CtxCancel(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+	for i := 0; i < 20; i++ {
+		writeSizedFile(t, base, "f"+strings.Repeat("0", 2)+string(rune('a'+i))+".bin", 64)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 进入遍历前即取消,断言取消信号确定性传播。
+
+	res, _, err := scanLarge(ctx, nil, ScanLargeInput{Dir: base, MinSize: 0, TopN: 5})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消后应返回 context.Canceled, got err=%v", err)
+	}
+	if res != nil {
+		t.Errorf("取消后不应返回结果: %+v", res)
+	}
+}
+
+// —— scan_dupes ——
+
+func TestScanDupes_SizeOnly(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+	sub := filepath.Join(base, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := writeSizedFile(t, base, "a.bin", 1500)
+	b := writeSizedFile(t, sub, "b.bin", 1500)
+	c := writeSizedFile(t, base, "c.bin", 300)
+	d := writeSizedFile(t, base, "d.bin", 300)
+	unique := writeSizedFile(t, base, "e.bin", 7)
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: algoSizeOnly})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes size_only 失败: err=%v res=%v", err, res)
+	}
+	groups := decodeGroups(t, res)
+	if len(groups) != 2 {
+		t.Fatalf("size 重复应产生 2 组, got %d: %+v", len(groups), groups)
+	}
+
+	cross := groups[0]
+	if cross.GroupID != "size-1500" || cross.WastedBytes != 1500 {
+		t.Errorf("跨目录组异常: %+v", cross)
+	}
+	if cross.SameDir {
+		t.Errorf("a.bin 与 sub/b.bin 跨目录,same_dir 应为 false: %+v", cross)
+	}
+	if !slices.Equal(cross.Files, []string{a, b}) {
+		t.Errorf("跨目录组文件 = %v, want [%s %s]", cross.Files, a, b)
+	}
+
+	same := groups[1]
+	if same.GroupID != "size-300" || same.WastedBytes != 300 {
+		t.Errorf("同目录组异常: %+v", same)
+	}
+	if !same.SameDir {
+		t.Errorf("c.bin 与 d.bin 同目录,same_dir 应为 true: %+v", same)
+	}
+	if !slices.Equal(same.Files, []string{c, d}) {
+		t.Errorf("同目录组文件 = %v, want [%s %s]", same.Files, c, d)
+	}
+
+	for _, group := range groups {
+		if slices.Contains(group.Files, unique) {
+			t.Errorf("体积唯一的 e.bin 不得出现在重复组: %+v", group)
+		}
+	}
+}
+
+func TestScanDupes_First1MB(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+
+	// dup1/dup2 共享前 1 MiB 但尾部不同:体积相同、全文不同,
+	// 只有 first_1mb 会把它们归为一组,sha256 不会(下条断言钉死)。
+	prefix := strings.Repeat("P", firstChunkSize)
+	dup1 := writeFileContent(t, base, "dup1.bin", prefix+"AAAA")
+	dup2 := writeFileContent(t, base, "dup2.bin", prefix+"BBBB")
+	writeFileContent(t, base, "other1.bin", "hello")
+	writeFileContent(t, base, "other2.bin", "hello-daedalus")
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: algoFirst1MB})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes first_1mb 失败: err=%v res=%v", err, res)
+	}
+	groups := decodeGroups(t, res)
+	if len(groups) != 1 {
+		t.Fatalf("first_1mb 应产生 1 组, got %d: %+v", len(groups), groups)
+	}
+	group := groups[0]
+	if !strings.HasPrefix(group.GroupID, "first1mb-") {
+		t.Errorf("组 ID 前缀 = %q, want first1mb-", group.GroupID)
+	}
+	if !slices.Equal(group.Files, []string{dup1, dup2}) {
+		t.Errorf("组文件 = %v, want [%s %s]", group.Files, dup1, dup2)
+	}
+	if want := int64(firstChunkSize + 4); group.WastedBytes != want {
+		t.Errorf("wasted_bytes = %d, want %d", group.WastedBytes, want)
+	}
+	if !group.SameDir {
+		t.Errorf("dup1/dup2 同目录,same_dir 应为 true: %+v", group)
+	}
+
+	// 同一夹具换 sha256:全文不同 → 没有重复组(证明算法分支真实生效)。
+	res, _, err = scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: algoSHA256})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes sha256 复跑失败: err=%v res=%v", err, res)
+	}
+	if groups := decodeGroups(t, res); len(groups) != 0 {
+		t.Errorf("全文不同的前缀碰撞文件不应被 sha256 归组: %+v", groups)
+	}
+}
+
+func TestScanDupes_SHA256(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+
+	payload := "daedalus-dupe-payload"
+	same1 := writeFileContent(t, base, "same1.bin", payload)
+	same2 := writeFileContent(t, base, "same2.bin", payload)
+	writeFileContent(t, base, "diff1.bin", "payload-one")
+	writeFileContent(t, base, "diff2.bin", "payload-two-longer")
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: algoSHA256})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes sha256 失败: err=%v res=%v", err, res)
+	}
+	groups := decodeGroups(t, res)
+	if len(groups) != 1 {
+		t.Fatalf("sha256 应产生 1 组, got %d: %+v", len(groups), groups)
+	}
+	group := groups[0]
+	if !strings.HasPrefix(group.GroupID, "sha256-") {
+		t.Errorf("组 ID 前缀 = %q, want sha256-", group.GroupID)
+	}
+	if !slices.Equal(group.Files, []string{same1, same2}) {
+		t.Errorf("组文件 = %v, want [%s %s]", group.Files, same1, same2)
+	}
+	if want := int64(len(payload)); group.WastedBytes != want {
+		t.Errorf("wasted_bytes = %d, want %d", group.WastedBytes, want)
+	}
+	if !group.SameDir {
+		t.Errorf("same1/same2 同目录,same_dir 应为 true: %+v", group)
+	}
+}
+
+func TestScanDupes_UnknownAlgo(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+	writeSizedFile(t, base, "a.bin", 32)
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: "md5"})
+	if err != nil {
+		t.Fatalf("未知算法应以工具错误返回,而非传输错误: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("未知算法 md5 竟然成功: %s", resultText(t, res))
+	}
+	want := `unknown algo "md5" (supported: size_only|first_1mb|sha256)`
+	if text := resultText(t, res); !strings.Contains(text, want) {
+		t.Errorf("错误消息 = %q, want 含 %q", text, want)
+	}
+}
+
+func TestScanDupes_PathGuardRejects(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{"/etc"}, Algo: algoSizeOnly})
+	if err != nil {
+		t.Fatalf("pathguard 拒绝应以工具错误返回,而非传输错误: %v", err)
+	}
+	if !res.IsError || !strings.Contains(resultText(t, res), "outside allowed directories") {
+		t.Errorf("/etc 未被白名单拒绝: isError=%v text=%q", res.IsError, resultText(t, res))
+	}
+}
+
+func TestScanDupes_MinSizeFilter(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+	for _, name := range []string{"a.bin", "b.bin", "c.bin", "d.bin", "e.bin"} {
+		writeSizedFile(t, base, name, 10)
+	}
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{
+		Dirs:    []string{base},
+		MinSize: 100 << 20, // 100 MiB:全部文件被过滤。
+		Algo:    algoSizeOnly,
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes min_size 过滤失败: err=%v res=%v", err, res)
+	}
+	if text := resultText(t, res); text != "[]" {
+		t.Errorf("全被过滤时输出 = %q, want %q", text, "[]")
+	}
+	if groups := decodeGroups(t, res); len(groups) != 0 {
+		t.Errorf("min_size 过滤后不应有分组: %+v", groups)
+	}
+}
+
+// —— 策略接线(fail-closed)——
+
+func TestApplyPolicyCorrupt(t *testing.T) {
+	orig := slices.Clone(pathguard.AllowedDirs)
+	t.Cleanup(func() { pathguard.WithAllowedDirs(orig) })
+
 	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "corrupt.toml"))
 	if err := applyPolicy(); err == nil {
-		t.Fatal("损坏策略竟然加载成功(应拒绝启动)")
+		t.Fatal("损坏策略竟然加载成功(应 fail-closed 拒绝启动)")
+	}
+	if !slices.Equal(pathguard.AllowedDirs, orig) {
+		t.Errorf("损坏策略不得部分注入白名单: %v", pathguard.AllowedDirs)
 	}
 }
 
-// TestPolicyInjection_MissingFallsBackToDefault 钉死稳健性要求:
-// 显式指向缺失 = 硬错误(不静默降级);整体缺失 = Default 回退、
-// pathguard 白名单保持现状 3 目录、applyPolicy 零错误(服务器可启动)。
-func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {
+func TestApplyPolicyMissing(t *testing.T) {
 	orig := slices.Clone(pathguard.AllowedDirs)
 	t.Cleanup(func() { pathguard.WithAllowedDirs(orig) })
 
+	// 1) 显式指向缺失 = 硬错误(不得静默降级)。
 	t.Setenv(policy.EnvPolicyPath, filepath.Join(t.TempDir(), "absent.toml"))
 	if err := applyPolicy(); err == nil {
-		t.Fatal("显式指向缺失应报错(不得静默回退)")
+		t.Fatal("显式指向缺失策略应报错(不得静默回退)")
 	}
 
+	// 2) 显式指向 testdata 合法夹具:白名单逐字跟随(/tmp-only)。
+	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "policy.toml"))
+	if err := applyPolicy(); err != nil {
+		t.Fatalf("加载 testdata 合法策略失败: %v", err)
+	}
+	if !slices.Equal(pathguard.AllowedDirs, []string{"/tmp"}) {
+		t.Fatalf("allowed_dirs 未跟随夹具: %v", pathguard.AllowedDirs)
+	}
+
+	// 3) 策略整体缺失(无 env、无生产路径、远离仓库 testdata)= Default 回退,
+	//    服务器仍可启动且白名单为内置 3 目录。
 	t.Setenv(policy.EnvPolicyPath, "")
 	if _, err := os.Stat(policy.ProductionPath); err == nil {
 		t.Skip("本机存在生产策略,跳过缺失回退演练")
 	}
-	t.Chdir(t.TempDir()) // 空目录上溯不可能命中仓库回溯路径。
+	t.Chdir(t.TempDir()) // 空目录上溯不可能命中仓库回溯路径(含 testdata 夹具)。
 	if err := applyPolicy(); err != nil {
-		t.Fatalf("全缺失应回退 Default 并成功: %v", err)
+		t.Fatalf("策略全缺失应回退 Default 并成功: %v", err)
 	}
 	if !slices.Equal(pathguard.AllowedDirs, []string{"/home", "/var/log", "/tmp"}) {
 		t.Errorf("Default 回退后白名单异常: %v", pathguard.AllowedDirs)
