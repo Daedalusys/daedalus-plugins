@@ -98,3 +98,8 @@ cd daedalus-plugins && go build ./... && go test ./...   # 6 插件全量
   `daedalus-core/files/system/opt/daedalus/plugins/`。
 - 新增插件 = 本仓加新目录(manifest + cmd/ + bin/)→ 主仓 `just plugin-pack`
   循环纳入 → `76-daedalus-plugin-gen.sh` 渲染 systemd 单元。
+## Where to file issues
+
+请在新仓开 issue。本 issue tracker **仅服务本仓代码**：
+- 跨仓问题（如同时影响 SDK 与 plugins）请先开在本仓，影响面大者会在评论里 cross-link 到其他仓。
+- 老仓 `Daedalusys/Daedalusys` 已于 2026-09-21 archived，历史 issue 保留可读；新 issue 一律开在本仓。
