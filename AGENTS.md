@@ -65,6 +65,7 @@ daedalus-plugins/
 | `sysinfo/` | `daedalus.sysinfo` | `os_release` / `hardware_info` / `network_status` | `sysinfo` | OS/hardware/network 只读探测 |
 | `service/` | `daedalus.service` | `service.query` / `service.list` | `objectmodel`、`state`、`dirs` | systemd 单元只读观测 — **不是** systemd 服务,也不改服务状态(走 `daedalus-tx`) |
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy` (post_check 钩子) | 6 参数化配置蓝图 (nginx/postgres/redis/haproxy) 渲染/应用 |
+| `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.disk-clean`) |
 
 ## 命名语义 (目录名 ≠ 系统组件,是"能力提供者")
 
