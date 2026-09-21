@@ -1,0 +1,10 @@
+{
+  "id": "nginx-reverse-proxy",
+  "display_name": "Nginx 反向代理",
+  "version": "0.1.0",
+  "description": "添加一个 Nginx 反向代理上游(upstream + location 块)。支持 path_prefix 与 strip_prefix 条件,将请求转发到指定 upstream_url。",
+  "category": "web",
+  "output_path_template": "/etc/nginx/conf.d/{name}-proxy.conf",
+  "reload_service": "nginx",
+  "required_tools": ["nginx", "systemctl"]
+}

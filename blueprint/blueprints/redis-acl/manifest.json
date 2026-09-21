@@ -1,0 +1,10 @@
+{
+  "id": "redis-acl",
+  "display_name": "Redis ACL 用户",
+  "version": "0.1.0",
+  "description": "添加或修改 Redis ACL 用户。生成 ACL 规则文件,包含用户、密码、允许命令与允许键模式,密码经 secret:// 引用解析,不落明文。",
+  "category": "database",
+  "output_path_template": "/etc/redis/daedalus/{user}.acl",
+  "reload_service": "redis",
+  "required_tools": ["redis-cli"]
+}

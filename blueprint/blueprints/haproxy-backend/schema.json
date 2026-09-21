@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daedalus.os/blueprints/haproxy-backend/schema.json",
+  "title": "HAProxy 后端与前端",
+  "description": "添加 HAProxy backend + frontend 配置段所需的输入参数。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "backend_servers", "frontend_port"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "backend/frontend 标识名,小写字母/数字/连字符。同时用作输出文件名的占位符 {name}。",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "backend_servers": {
+      "type": "array",
+      "description": "后端服务器地址列表,每个为 uri(如 http://10.0.0.1:8080),逐项渲染 server 行。",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      },
+      "minItems": 1
+    },
+    "frontend_port": {
+      "type": "integer",
+      "description": "frontend 监听端口,范围 1-65535。",
+      "minimum": 1,
+      "maximum": 65535
+    }
+  }
+}

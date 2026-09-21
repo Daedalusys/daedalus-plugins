@@ -1,0 +1,4 @@
+# 构建产物:blueprint 蓝图数据经 `just blueprint-embed`(rsync)从
+# daedalus-plugins/blueprint/blueprints/ 复制到 cmd 同目录供 //go:embed 使用,
+# 不入库;源码侧 blueprints/ 是唯一事实源。
+blueprint/cmd/daedalus-blueprint/blueprints/

@@ -1,0 +1,10 @@
+# Redis ACL 用户规则
+# 由 daedalus-blueprint 渲染;输出到 /etc/redis/daedalus/{user}.acl
+# 密码经 secret:// 引用解析后由蓝图插件安全注入,本文件不落明文(仅含占位符 {{.password}})。
+# 注意:此模板使用 Go text/template 语法,占位符(形如 {param} 的路径模板,与 schema.json 字段一一对应)。
+# 语法:user <用户名> on ><密码> ~<键模式> +<命令> ... (ACL SETUSER 同一文法)
+
+user {{ .user }} on >{{ .password }}{{ range .allowed_keys }} ~{{ . }}{{ end }}{{ range .allowed_commands }} +{{ . }}{{ end }}
+
+{{/* INSERTION_POINT */}}
+# 其他 ACL 约束(如 -@dangerous 排除类别、&<通道模式> 频道订阅)可插入到此处

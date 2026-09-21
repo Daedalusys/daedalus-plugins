@@ -1,0 +1,34 @@
+{
+  "id": "daedalus.pkg",
+  "name": "Daedalus Package",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-pkg",
+  "tools": [
+    "dnf_query",
+    "dnf_list_installed"
+  ],
+  "resources": [
+    {
+      "kind": "package",
+      "name": "*"
+    }
+  ],
+  "permissions": {
+    "read": [
+      "/var/lib/rpm",
+      "/etc/yum.repos.d"
+    ],
+    "write": [],
+    "run": [
+      "/usr/bin/rpm",
+      "/usr/bin/dnf"
+    ]
+  }
+}

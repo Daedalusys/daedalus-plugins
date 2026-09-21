@@ -1,0 +1,22 @@
+# HAProxy backend + frontend 配置段
+# 由 daedalus-blueprint 渲染;输出到 /etc/haproxy/daedalus/{name}.cfg
+# 主配置 /etc/haproxy/haproxy.cfg 需 include 本目录(cfgdir 或通配 include)。
+# 注意:此模板使用 Go text/template 语法,占位符(形如 {param} 的路径模板,与 schema.json 字段一一对应)。
+
+# backend:定义后端服务器池
+backend {{ .name }}_backend
+    mode http
+    balance roundrobin
+    option httpchk GET /
+    {{- range $i, $srv := .backend_servers }}
+    server {{ $.name }}_{{ $i }} {{ $srv }} check
+    {{- end }}
+
+# frontend:监听 {{ .frontend_port }} 并转发到上述 backend
+frontend {{ .name }}_frontend
+    bind *:{{ .frontend_port }}
+    mode http
+    default_backend {{ .name }}_backend
+
+{{/* INSERTION_POINT */}}
+# 其他 frontend/backend 指令(如 ACL 路由、ssl 终止)可插入到此处

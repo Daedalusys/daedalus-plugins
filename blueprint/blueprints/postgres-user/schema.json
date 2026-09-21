@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daedalus.os/blueprints/postgres-user/schema.json",
+  "title": "PostgreSQL 用户与权限",
+  "description": "添加或修改 PostgreSQL 用户及其权限所需的输入参数。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["user", "password", "privileges", "db"],
+  "properties": {
+    "user": {
+      "type": "string",
+      "description": "PostgreSQL 用户名,小写字母/数字/下划线。同时用作输出文件名的占位符 {user}。",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "password": {
+      "type": "string",
+      "description": "用户密码。仅接受 secret:// 引用(如 secret://kwallet/postgres/user),由蓝图插件解析,不落明文。",
+      "pattern": "^secret://"
+    },
+    "privileges": {
+      "type": "array",
+      "description": "授予用户的权限列表,可重复执行 GRANT。",
+      "items": {
+        "type": "string",
+        "enum": ["SELECT", "INSERT", "UPDATE", "DELETE", "ALL"]
+      },
+      "minItems": 1
+    },
+    "db": {
+      "type": "string",
+      "description": "权限生效的数据库名。同时用作输出文件名的占位符 {db}。",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    }
+  }
+}

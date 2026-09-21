@@ -1,0 +1,10 @@
+{
+  "id": "postgres-user",
+  "display_name": "PostgreSQL 用户与权限",
+  "version": "0.1.0",
+  "description": "添加或修改 PostgreSQL 用户及其对指定数据库的权限。生成 CREATE USER + GRANT 循环的 SQL 脚本,密码经 secret:// 引用解析,不落明文。",
+  "category": "database",
+  "output_path_template": "/etc/postgresql/daedalus/{user}-{db}.sql",
+  "reload_service": "postgresql",
+  "required_tools": ["psql"]
+}

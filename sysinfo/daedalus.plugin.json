@@ -1,0 +1,30 @@
+{
+  "id": "daedalus.sysinfo",
+  "name": "Daedalus System Information",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-sysinfo",
+  "tools": [
+    "os_release",
+    "hardware_info",
+    "network_status"
+  ],
+  "permissions": {
+    "read": [
+      "/etc/os-release",
+      "/usr/lib/os-release",
+      "/proc",
+      "/sys"
+    ],
+    "write": [],
+    "run": [
+      "/usr/bin/ip"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+# daedalus-shell 注入测试夹具:语法损坏,applyPolicy 必须报错(拒绝启动)。
+[shell]
+allowed_commands = ["df",
+timeout_ms = 

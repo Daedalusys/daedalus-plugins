@@ -1,0 +1,25 @@
+# Nginx 反向代理上游配置
+# 由 daedalus-blueprint 渲染;输出到 /etc/nginx/conf.d/{name}-proxy.conf
+# 注意:此模板使用 Go text/template 语法,占位符(形如 {param} 的路径模板,与 schema.json 字段一一对应)。
+upstream {{ .name }}_backend {
+    server {{ .upstream_url }};
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    location {{ if .path_prefix }}{{ .path_prefix }}{{ else }}/{{ end }} {
+        {{- if .strip_prefix }}
+        # strip_prefix 开启:剥掉路径前缀后再转发,避免上游看到 /api 前缀
+        rewrite ^{{ .path_prefix }}(.*)$ $1 break;
+        {{- end }}
+        proxy_pass http://{{ .name }}_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    {{/* INSERTION_POINT */}}
+    # 其他代理级指令(如 proxy_read_timeout / client_max_body_size)可插入到此处
+}

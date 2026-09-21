@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daedalus.os/blueprints/nginx-vhost/schema.json",
+  "title": "Nginx 虚拟主机",
+  "description": "添加或删除一个 Nginx 虚拟主机配置所需的输入参数。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["domain"],
+  "properties": {
+    "domain": {
+      "type": "string",
+      "description": "虚拟主机域名,例如 example.com。同时用作输出文件名的占位符 {domain}。",
+      "pattern": "^[a-z0-9][a-z0-9.-]*\\.[a-z]{2,}$"
+    },
+    "backend": {
+      "type": "string",
+      "description": "可选的反向代理后端地址,例如 http://127.0.0.1:8080。省略时仅生成静态 server block 占位。",
+      "format": "uri"
+    },
+    "ssl": {
+      "type": "boolean",
+      "description": "是否生成 SSL 监听段(443 + ssl 证书配置)。",
+      "default": false
+    },
+    "listen_ports": {
+      "type": "array",
+      "description": "监听端口列表,默认 [80, 443]。",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      },
+      "default": [80, 443]
+    }
+  }
+}

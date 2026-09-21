@@ -1,0 +1,104 @@
+---
+# daedalus-plugins 仓 CI(拆仓后本文件即 plugins 仓的 .github/workflows/test.yml)。
+#
+# 职责:6 个 sub-module(fs/shell/pkg/sysinfo/service/blueprint)独立
+# `go build -trimpath -o bin/ ./cmd/...` + `go test ./...` + i18n 同步校验。
+#
+# 布局约定(post-split 3 仓平级 clone):
+#   - 本 workflow 的 checkout root = plugins 仓根(含 fs/ shell/ pkg/ sysinfo/
+#     service/ blueprint/ 6 个 sub-module)。
+#   - daedalus-sdk 以兄弟仓形态 checkout 到 ../daedalus-sdk(review Momus
+#     Issue 2 修正:path 必须是 ../daedalus-sdk 指向 workspace 兄弟,不是
+#     ../../daedalus-sdk——后者会解析到 checkout root 上级的兄弟仓本身,不满足
+#     plugin module 的 `replace ... => ../../daedalus-sdk` 相对链)。go build
+#     从 daedalus-plugins/fs/ 跑时,../../daedalus-sdk 才解析到 workspace 的
+#     daedalus-sdk。
+name: Plugins Test
+on:
+  pull_request:
+    # 反向白名单:仅忽略纯文档,其余路径变更都触发 CI。
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  push:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# 并发:同一 ref 同一 workflow 同时只跑一个;新 push 自动取消旧 run。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+# 最小权限默认 contents:read。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (6 sub-modules build + test + i18n)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout daedalus-sdk (sibling)
+        # review Momus Issue 2:path 必须是 ../daedalus-sdk(workspace 兄弟),
+        # 不是 ../../daedalus-sdk。各 sub-module go.mod 的
+        # `replace github.com/Daedalusys/daedalus-sdk => ../../daedalus-sdk`
+        # 从 daedalus-plugins/<cap>/ 出发解析到 workspace 的 daedalus-sdk。
+        uses: actions/checkout@v4
+        with:
+          repository: Daedalusys/daedalus-sdk
+          path: ../daedalus-sdk
+
+      - name: Set Up Go Toolchain
+        # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build & Test 6 sub-modules
+        # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
+        # 必须逐模块跑)。go build 产物落 <cap>/bin/(manifest executable 指向
+        # bin/daedalus-<cap>);go test 含各插件单测。
+        shell: bash
+        run: |
+          for cap in fs shell pkg sysinfo service blueprint; do
+            echo "== $cap =="
+            (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
+            (cd "$cap" && go test ./...)
+          done
+
+      - name: i18n sync validation
+        # manifest 的 i18n 声明 ↔ i18n/ 实物双向校验(声明有但实物无 / 实物有
+        # 但声明无均 fail)。6 插件当前均无 i18n 字段与 i18n/ 目录,此门禁防
+        # 未来漂移;en_US 必定位兜底约束由 copilot 侧 i18n_keys.test.sh 覆盖
+        # (copilot 留 core 仓)。
+        shell: bash
+        run: |
+          for cap in fs shell pkg sysinfo service blueprint; do
+            manifest="$cap/daedalus.plugin.json"
+            i18n_dir="$cap/i18n"
+            declared=$(jq -r '.i18n // [] | .[]' "$manifest" 2>/dev/null || true)
+            actual=""
+            if [ -d "$i18n_dir" ]; then
+              actual=$(find "$i18n_dir" -maxdepth 1 -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort)
+            fi
+            # 声明有但实物无 → fail
+            for loc in $declared; do
+              if [ -n "$loc" ] && [ ! -f "$i18n_dir/$loc.json" ]; then
+                echo "FAIL: $manifest 声明 i18n=$loc 但 $i18n_dir/$loc.json 不存在" >&2
+                exit 1
+              fi
+            done
+            # 实物有但声明无 → fail
+            for loc in $actual; do
+              if ! echo "$declared" | grep -qx "$loc"; then
+                echo "FAIL: $i18n_dir/$loc.json 存在但 manifest 未声明" >&2
+                exit 1
+              fi
+            done
+            echo "i18n sync OK: $cap"
+          done

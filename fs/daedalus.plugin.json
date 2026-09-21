@@ -1,0 +1,31 @@
+{
+  "id": "daedalus.fs",
+  "name": "Daedalus Filesystem",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-fs",
+  "tools": [
+    "read_file",
+    "write_file",
+    "list_dir",
+    "move_file"
+  ],
+  "permissions": {
+    "read": [
+      "/home",
+      "/var/log",
+      "/tmp"
+    ],
+    "write": [
+      "/home",
+      "/var/log",
+      "/tmp"
+    ]
+  }
+}

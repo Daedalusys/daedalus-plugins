@@ -1,0 +1,10 @@
+{
+  "id": "postgres-db",
+  "display_name": "PostgreSQL 数据库",
+  "version": "0.1.0",
+  "description": "创建 PostgreSQL 数据库及其 owner 用户。生成 CREATE DATABASE + CREATE USER + GRANT 的 SQL 脚本,密码经 secret:// 引用解析,不落明文。",
+  "category": "database",
+  "output_path_template": "/etc/postgresql/daedalus/{db_name}.sql",
+  "reload_service": "postgresql",
+  "required_tools": ["psql"]
+}

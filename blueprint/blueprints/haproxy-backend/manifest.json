@@ -1,0 +1,10 @@
+{
+  "id": "haproxy-backend",
+  "display_name": "HAProxy 后端与前端",
+  "version": "0.1.0",
+  "description": "添加 HAProxy backend + frontend 配置段。支持多个 backend 服务器与自定义 frontend 端口,生成独立的 .cfg 片段由主配置 include。",
+  "category": "web",
+  "output_path_template": "/etc/haproxy/daedalus/{name}.cfg",
+  "reload_service": "haproxy",
+  "required_tools": ["haproxy"]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "nginx-vhost",
+  "display_name": "Nginx 虚拟主机",
+  "version": "0.1.0",
+  "description": "添加或删除一个 Nginx 虚拟主机(vhost)配置。生成标准 server block,支持可选 backend 反代、SSL 段与自定义监听端口。",
+  "category": "web",
+  "output_path_template": "/etc/nginx/conf.d/{domain}.conf",
+  "reload_service": "nginx",
+  "required_tools": ["nginx", "systemctl"]
+}

@@ -1,0 +1,34 @@
+# Nginx 虚拟主机 server block
+# 由 daedalus-blueprint 渲染;输出到 /etc/nginx/conf.d/{domain}.conf
+# 注意:此模板使用 Go text/template 语法,占位符(形如 {param} 的路径模板,与 schema.json 字段一一对应)。
+server {
+    server_name {{ .domain }};
+
+    {{- range $p := .listen_ports }}
+    listen {{ $p }}{{ if and $.ssl (eq $p 443) }} ssl{{ end }};
+    {{- end }}
+
+    {{- if .ssl }}
+    # SSL 段:证书路径约定为 /etc/letsencrypt/live/{domain}/
+    ssl_certificate     /etc/letsencrypt/live/{{ .domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ .domain }}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    {{- end }}
+
+    {{- if .backend }}
+    # 反代到后端
+    location / {
+        proxy_pass {{ .backend }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    {{- else }}
+    # 静态站点根目录占位,按需修改
+    root /var/www/{{ .domain }};
+    index index.html;
+    {{- end }}
+
+    {{/* INSERTION_POINT */}}
+    # 其他 vhost 级指令(如 rewrite / access_log)可插入到此处
+}

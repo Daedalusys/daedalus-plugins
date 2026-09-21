@@ -1,0 +1,42 @@
+{
+  "id": "daedalus.blueprint",
+  "name": "Daedalus Blueprint",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-blueprint",
+  "tools": [
+    "blueprint_list",
+    "blueprint_inspect",
+    "blueprint_render",
+    "blueprint_apply",
+    "blueprint_status",
+    "blueprint_remove"
+  ],
+  "permissions": {
+    "read": [
+      "/etc/nginx/conf.d",
+      "/etc/haproxy",
+      "/etc/postgresql",
+      "/etc/redis"
+    ],
+    "write": [
+      "/etc/nginx/conf.d",
+      "/etc/haproxy",
+      "/etc/postgresql",
+      "/etc/redis"
+    ],
+    "run": [
+      "/usr/bin/nginx",
+      "/usr/bin/haproxy",
+      "/usr/bin/psql",
+      "/usr/bin/redis-cli",
+      "/usr/bin/systemctl"
+    ]
+  }
+}

@@ -1,0 +1,115 @@
+---
+# daedalus-plugins 仓 release 流水线(拆仓后本文件即 plugins 仓的
+# .github/workflows/release.yml;plan todo 15)。
+#
+# 职责:6 个 sub-module(fs/shell/pkg/sysinfo/service/blueprint)各跑
+# `go build -trimpath -o bin/ ./cmd/...` + `daedalus-plugin-pack -in . -out <zip>`
+# 打 6 个 *.plugin.zip,上传到 GitHub release——daedalus-core 仓镜像构建
+# (build.yml 的 Download plugin zips 步骤 / 本地 fetch-plugins.sh)从该 release
+# 拉取 zip 解压进镜像树安装态。
+#
+# 触发:推送 v* tag(正式发版)或 workflow_dispatch(手动,需填 tag input)。
+#
+# 跨仓依赖:
+#   - daedalus-sdk 以兄弟仓形态 checkout 到 ../daedalus-sdk(各 sub-module
+#     go.mod 的 `replace => ../../daedalus-sdk` 相对链解析,同 test.yml);
+#   - daedalus-plugin-pack 打包器在 daedalus-core 仓(cmd/daedalus-plugin-pack),
+#     plugins 仓没有——checkout daedalus-core 兄弟仓构建该二进制。
+#     (core 发布 v0.2.0 tag 后可改为 pinned-tag checkout,当前用默认分支。)
+name: Plugins Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag(dispatch 手动发版时指定,如 v0.2.0;push v* tag 时自动取 tag)'
+        required: false
+        default: ''
+
+# 并发:同一 ref 同一 workflow 同时只跑一个;新 push 自动取消旧 run。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+# 需要 contents:write 创建 release + 上传资产。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Upload 6 plugin zips
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout daedalus-sdk (sibling)
+        # 同 test.yml:path 必须是 ../daedalus-sdk(workspace 兄弟),各 sub-module
+        # go.mod 的 replace 从 daedalus-plugins/<cap>/ 出发解析到 workspace 的 SDK。
+        uses: actions/checkout@v4
+        with:
+          repository: Daedalusys/daedalus-sdk
+          path: ../daedalus-sdk
+
+      - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
+        # 打包器二进制在 core 仓(cmd/daedalus-plugin-pack),plugins 仓无此命令;
+        # core 的 go.mod `replace => ../daedalus-sdk` 经上方 SDK 兄弟 checkout 解析。
+        uses: actions/checkout@v4
+        with:
+          repository: Daedalusys/daedalus-core
+          path: ../daedalus-core
+
+      - name: Set Up Go Toolchain
+        # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build daedalus-plugin-pack (from daedalus-core)
+        # 只构建打包器一个二进制(不构建 core 其余 cmd);-h 冒烟确认可执行。
+        shell: bash
+        run: |
+          (cd ../daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
+          ../daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
+
+      - name: Build 6 plugins & pack 6 zips
+        # 每个 sub-module 独立 go build(monorepo 无共享 go.mod);zip 打到暂存
+        # 目录 /tmp/release-zips/(不在插件源目录内——若 -out 落在 -in 目录里,
+        # 重跑时旧 zip 会被 collectEntries 打进新 zip,zip-in-zip 递归膨胀)。
+        shell: bash
+        run: |
+          mkdir -p /tmp/release-zips
+          for cap in fs shell pkg sysinfo service blueprint; do
+            echo "== $cap =="
+            (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
+            ../daedalus-core/bin/daedalus-plugin-pack -in "$cap" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
+          done
+          ls -la /tmp/release-zips/
+
+      - name: Create or update GitHub release with 6 zips
+        # gh 在 runner 预装且经 GITHUB_TOKEN 认证;release 已存在时(重跑)只
+        # 上传资产(--clobber 覆盖),不存在时创建。tag 来源:push v* → 自动取
+        # tag;workflow_dispatch → 必须填 tag input(fail-closed)。
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "ERROR: workflow_dispatch 必须提供 tag input(如 v0.2.0)" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
+              --title "daedalus-plugins $TAG" \
+              --notes "6 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint),供 daedalus-core 镜像构建经 fetch-plugins.sh / build.yml 拉取解压。"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY"

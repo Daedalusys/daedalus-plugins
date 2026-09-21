@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daedalus.os/blueprints/postgres-db/schema.json",
+  "title": "PostgreSQL 数据库",
+  "description": "创建 PostgreSQL 数据库及 owner 用户所需的输入参数。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["db_name", "owner", "password"],
+  "properties": {
+    "db_name": {
+      "type": "string",
+      "description": "数据库名称,小写字母/数字/下划线,必须以字母或下划线开头。同时用作输出文件名的占位符 {db_name}。",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "owner": {
+      "type": "string",
+      "description": "数据库 owner 用户名,小写字母/数字/下划线。",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "password": {
+      "type": "string",
+      "description": "owner 用户密码。仅接受 secret:// 引用(如 secret://kwallet/postgres/owner),由蓝图插件解析,不落明文。",
+      "pattern": "^secret://"
+    }
+  }
+}

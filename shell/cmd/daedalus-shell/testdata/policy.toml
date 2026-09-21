@@ -1,0 +1,28 @@
+# daedalus-shell 注入测试夹具:白名单换成 echo/date(移除现状的 uname),
+# 前缀收缩为 /tmp、blocked 换成 /root、超时 5000ms。
+# 证明 shellpolicy 各包级值逐字跟随 policy.toml。
+[shell]
+allowed_commands = ["echo", "date"]
+binary_dirs = ["/usr/bin", "/bin"]
+allowed_path_prefixes = ["/tmp"]
+blocked_paths = ["/root"]
+clean_env = { PATH = "/usr/bin:/bin", LANG = "C" }
+timeout_ms = 5000
+
+[fs]
+allowed_dirs = ["/tmp"]
+
+[audit]
+log_path = "/tmp/daedalus-shell-policy-test-audit.jsonl"
+
+# [objectmodel] 为 fail-closed 必需节:补最小合法值使夹具整体通过校验。
+[objectmodel]
+enabled_kinds = ["service"]
+
+# [blueprints] 为 fail-closed 必需节:值与主 policy.toml 逐字一致,
+# 使夹具整体通过校验(TestPolicyInjection_*)。
+[blueprints]
+output_dirs = ["/etc/nginx/conf.d", "/etc/haproxy", "/etc/postgresql", "/etc/redis"]
+post_check_commands = ["nginx", "haproxy", "psql", "redis-cli", "sudo"]
+reload_services = ["nginx", "haproxy", "postgresql", "redis"]
+secret_sources = ["kwallet", "credstore"]

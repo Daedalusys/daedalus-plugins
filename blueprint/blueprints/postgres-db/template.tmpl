@@ -1,0 +1,23 @@
+-- PostgreSQL 数据库创建脚本
+-- 由 daedalus-blueprint 渲染;输出到 /etc/postgresql/daedalus/{db_name}.sql
+-- 密码经 secret:// 引用解析后由蓝图插件安全注入,本文件不落明文(仅含占位符 {{.password}})。
+-- 注意:此模板使用 Go text/template 语法,占位符(形如 {param} 的路径模板,与 schema.json 字段一一对应)。
+
+-- 创建 owner 用户(若不存在)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ .owner }}') THEN
+        CREATE USER {{ .owner }} WITH PASSWORD '{{ .password }}';
+    END IF;
+END
+$$;
+
+-- 创建数据库(若不存在),owner 归 {{ .owner }}
+SELECT 'CREATE DATABASE {{ .db_name }} OWNER {{ .owner }}'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{{ .db_name }}')\gexec
+
+-- 授权:{{ .owner }} 为 {{ .db_name }} 的 owner,已拥有全部权限
+GRANT ALL PRIVILEGES ON DATABASE {{ .db_name }} TO {{ .owner }};
+
+{{/* INSERTION_POINT */}}
+-- 其他初始化语句(如扩展、schema、初始化表)可插入到此处

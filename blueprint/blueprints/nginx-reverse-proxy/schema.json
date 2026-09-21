@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daedalus.os/blueprints/nginx-reverse-proxy/schema.json",
+  "title": "Nginx 反向代理",
+  "description": "添加一个 Nginx 反向代理上游所需的输入参数。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "upstream_url"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "上游与代理配置的标识名,例如 myapp。同时用作输出文件名的占位符 {name}。",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "upstream_url": {
+      "type": "string",
+      "description": "后端上游地址,例如 http://127.0.0.1:3000。",
+      "format": "uri"
+    },
+    "path_prefix": {
+      "type": "string",
+      "description": "可选的 location 路径前缀,例如 /api。省略时匹配根路径 /。",
+      "pattern": "^/"
+    },
+    "strip_prefix": {
+      "type": "boolean",
+      "description": "转发时是否剥离 path_prefix(使用 rewrite 去除前缀后再 proxy_pass)。",
+      "default": false
+    }
+  }
+}
