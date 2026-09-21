@@ -65,7 +65,7 @@ jobs:
         # bin/daedalus-<cap>);go test 含各插件单测。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint; do
+          for cap in fs shell pkg sysinfo service blueprint dupe; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)
@@ -78,7 +78,7 @@ jobs:
         # (copilot 留 core 仓)。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint; do
+          for cap in fs shell pkg sysinfo service blueprint dupe; do
             manifest="$cap/daedalus.plugin.json"
             i18n_dir="$cap/i18n"
             declared=$(jq -r '.i18n // [] | .[]' "$manifest" 2>/dev/null || true)
