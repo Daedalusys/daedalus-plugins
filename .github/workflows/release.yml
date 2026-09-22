@@ -11,10 +11,11 @@
 # 触发:推送 v* tag(正式发版)或 workflow_dispatch(手动,需填 tag input)。
 #
 # 跨仓依赖:
-#   - daedalus-sdk 以兄弟仓形态 checkout 到 ../daedalus-sdk(各 sub-module
-#     go.mod 的 `replace => ../../daedalus-sdk` 相对链解析,同 test.yml);
+#   - daedalus-sdk 检出到 workspace 子目录 daedalus-sdk(GH Actions 不允许 checkout
+#     逃出 GITHUB_WORKSPACE,旧 ../daedalus-sdk 写法必失败);各 sub-module
+#     go.mod 的 `replace => ../daedalus-sdk` 相对链解析到该目录,同 test.yml;
 #   - daedalus-plugin-pack 打包器在 daedalus-core 仓(cmd/daedalus-plugin-pack),
-#     plugins 仓没有——checkout daedalus-core 兄弟仓构建该二进制。
+#     plugins 仓没有——checkout daedalus-core 到 workspace 子目录构建该二进制。
 #     (core 发布 v0.2.0 tag 后可改为 pinned-tag checkout,当前用默认分支。)
 name: Plugins Release
 on:
@@ -46,20 +47,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checkout daedalus-sdk (sibling)
-        # 同 test.yml:path 必须是 ../daedalus-sdk(workspace 兄弟),各 sub-module
-        # go.mod 的 replace 从 daedalus-plugins/<cap>/ 出发解析到 workspace 的 SDK。
+        # 同 test.yml:SDK 检出到 workspace 子目录 daedalus-sdk,各 sub-module
+        # go.mod 的 replace 从 daedalus-plugins/<cap>/ 出发解析到该目录。
         uses: actions/checkout@v4
         with:
           repository: Daedalusys/daedalus-sdk
-          path: ../daedalus-sdk
+          path: daedalus-sdk
 
       - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
         # 打包器二进制在 core 仓(cmd/daedalus-plugin-pack),plugins 仓无此命令;
-        # core 的 go.mod `replace => ../daedalus-sdk` 经上方 SDK 兄弟 checkout 解析。
+        # core 检出到 workspace 子目录 daedalus-core,其 go.mod
+        # `replace => ../daedalus-sdk` 经上方 SDK 检出解析。
         uses: actions/checkout@v4
         with:
           repository: Daedalusys/daedalus-core
-          path: ../daedalus-core
+          path: daedalus-core
 
       - name: Set Up Go Toolchain
         # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
