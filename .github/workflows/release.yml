@@ -71,10 +71,25 @@ jobs:
 
       - name: Build daedalus-plugin-pack (from daedalus-core)
         # 只构建打包器一个二进制(不构建 core 其余 cmd);-h 冒烟确认可执行。
+        # 路径注意:上方 checkout 的 path 是相对 GITHUB_WORKSPACE 的子目录,
+        # 故 core 在 workspace 内的 daedalus-core/ 而非 ../daedalus-core 平级
+        # 目录(Action 不允许检出逃出 workspace),此处须用子目录相对路径。
+        # core 自身 go.mod 的 `replace => ../daedalus-sdk` 从该子目录出发恰好
+        # 解析到上方 SDK 检出。
         shell: bash
         run: |
-          (cd ../daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
-          ../daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
+          (cd daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
+          daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
+
+      - name: Materialize blueprint embed data (//go:embed 源)
+        # 同 test.yml:blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed
+        # 目标但为 gitignored 构建产物,全新 checkout 无此目录 → go build 报
+        # "no matching files found"。照抄 core `just blueprint-embed` 配方,从
+        # 已入库的事实源 blueprint/blueprints/ rsync 出嵌入目录。
+        shell: bash
+        run: |
+          mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
+          rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
       - name: Build 6 plugins & pack 6 zips
         # 每个 sub-module 独立 go build(monorepo 无共享 go.mod);zip 打到暂存
@@ -86,7 +101,7 @@ jobs:
           for cap in fs shell pkg sysinfo service blueprint dupe; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
-            ../daedalus-core/bin/daedalus-plugin-pack -in "$cap" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
+            daedalus-core/bin/daedalus-plugin-pack -in "$cap" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
           done
           ls -la /tmp/release-zips/
 
