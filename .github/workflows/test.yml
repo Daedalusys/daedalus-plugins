@@ -57,6 +57,17 @@ jobs:
         with:
           go-version: '1.25.x'
 
+      - name: Materialize blueprint embed data (//go:embed 源)
+        # blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed all:blueprints/*
+        # 的目标目录,但它是 gitignored 构建产物(正常由 core 仓 `just blueprint-embed`
+        # 生成),CI 全新 checkout 里没有 → go build 报 "no matching files found"。
+        # 照抄 blueprint-embed 配方:从唯一事实源 blueprint/blueprints/(已入库)
+        # rsync 出嵌入目录(复制产物仍不入库,与 core justfile 行为一致)。
+        shell: bash
+        run: |
+          mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
+          rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
+
       - name: Build & Test 6 sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
         # 必须逐模块跑)。go build 产物落 <cap>/bin/(manifest executable 指向
