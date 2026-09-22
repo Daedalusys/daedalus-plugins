@@ -95,13 +95,25 @@ jobs:
         # 每个 sub-module 独立 go build(monorepo 无共享 go.mod);zip 打到暂存
         # 目录 /tmp/release-zips/(不在插件源目录内——若 -out 落在 -in 目录里,
         # 重跑时旧 zip 会被 collectEntries 打进新 zip,zip-in-zip 递归膨胀)。
+        # 打包源必须走"暂存目录"而非插件源目录:照抄 core `just plugin-pack`
+        # 配方——暂存只放 daedalus.plugin.json + bin/daedalus-<cap>。直接 -in
+        # "$cap" 会把 cmd/*.go + go.mod + go.sum + testdata 全打进 zip,解包进
+        # core 镜像树安装态后泄漏源码进 /opt,违反零残留断言(CI build.yml
+        # "Verify Image Zero-Residue" 步 find /opt -name go.mod 实测暴露)。
+        # blueprint 的 blueprints/ 数据已 //go:embed 进二进制,同样不入 zip。
         shell: bash
         run: |
           mkdir -p /tmp/release-zips
           for cap in fs shell pkg sysinfo service blueprint dupe; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
-            daedalus-core/bin/daedalus-plugin-pack -in "$cap" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
+            stage="/tmp/release-zips-stage/$cap"
+            rm -rf "$stage"
+            mkdir -p "$stage/bin"
+            cp -f "$cap/daedalus.plugin.json" "$stage/daedalus.plugin.json"
+            cp -f "$cap/bin/daedalus-$cap" "$stage/bin/daedalus-$cap"
+            chmod 0755 "$stage/bin/daedalus-$cap"
+            daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
           done
           ls -la /tmp/release-zips/
 
