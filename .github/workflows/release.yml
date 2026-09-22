@@ -125,7 +125,11 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
           else
+            # --target "$GITHUB_SHA":dispatch 创建的 release/tag 默认落**默认分支**
+            # HEAD(v0.1.0 即因此错指 main 而非触发 head);显式指向本次 run 的实际
+            # commit,保证 tag 落点与构建产物源码一致。push v* 时二者本就相同。
             gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
               --title "daedalus-plugins $TAG" \
               --notes "6 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint),供 daedalus-core 镜像构建经 fetch-plugins.sh / build.yml 拉取解压。"
           fi
