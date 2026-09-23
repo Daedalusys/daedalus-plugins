@@ -97,13 +97,26 @@ func callToolJSON(t *testing.T, session *mcp.ClientSession, ctx context.Context,
 
 // testdataRoot 定位 daedalus-sdk/sysinfo/testdata/<name>(fixture 单一来源,
 // 随包迁入 SDK,避免在 cmd 测试里复制 testdata)。
+// 从本测试文件所在目录起逐级向上搜索,返回首个包含该 fixture 的祖先目录;
+// 兼容本地三仓平级布局(上 4 级)与 CI 中 SDK 位于 workspace 子目录(上 3 级)。
 func testdataRoot(t *testing.T, name string) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("无法定位本测试文件")
 	}
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", "daedalus-sdk", "sysinfo", "testdata", name)
+	rel := filepath.Join("daedalus-sdk", "sysinfo", "testdata", name)
+	for dir := filepath.Dir(thisFile); ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, rel)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			break
+		}
+	}
+	t.Fatalf("未找到 daedalus-sdk/sysinfo/testdata/%s(自 %s 向上搜索到根)", name, filepath.Dir(thisFile))
+	return ""
 }
 
 // TestToolsList_MatchesPySpec 断言 3 个工具与 py 函数同名、只读注解齐备、

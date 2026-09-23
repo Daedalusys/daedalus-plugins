@@ -11,10 +11,11 @@
 # 触发:推送 v* tag(正式发版)或 workflow_dispatch(手动,需填 tag input)。
 #
 # 跨仓依赖:
-#   - daedalus-sdk 以兄弟仓形态 checkout 到 ../daedalus-sdk(各 sub-module
-#     go.mod 的 `replace => ../../daedalus-sdk` 相对链解析,同 test.yml);
+#   - daedalus-sdk 检出到 workspace 子目录 daedalus-sdk(GH Actions 不允许 checkout
+#     逃出 GITHUB_WORKSPACE,旧 ../daedalus-sdk 写法必失败);各 sub-module
+#     go.mod 的 `replace => ../daedalus-sdk` 相对链解析到该目录,同 test.yml;
 #   - daedalus-plugin-pack 打包器在 daedalus-core 仓(cmd/daedalus-plugin-pack),
-#     plugins 仓没有——checkout daedalus-core 兄弟仓构建该二进制。
+#     plugins 仓没有——checkout daedalus-core 到 workspace 子目录构建该二进制。
 #     (core 发布 v0.2.0 tag 后可改为 pinned-tag checkout,当前用默认分支。)
 name: Plugins Release
 on:
@@ -46,20 +47,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checkout daedalus-sdk (sibling)
-        # 同 test.yml:path 必须是 ../daedalus-sdk(workspace 兄弟),各 sub-module
-        # go.mod 的 replace 从 daedalus-plugins/<cap>/ 出发解析到 workspace 的 SDK。
+        # 同 test.yml:SDK 检出到 workspace 子目录 daedalus-sdk,各 sub-module
+        # go.mod 的 replace 从 daedalus-plugins/<cap>/ 出发解析到该目录。
         uses: actions/checkout@v4
         with:
           repository: Daedalusys/daedalus-sdk
-          path: ../daedalus-sdk
+          path: daedalus-sdk
 
       - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
         # 打包器二进制在 core 仓(cmd/daedalus-plugin-pack),plugins 仓无此命令;
-        # core 的 go.mod `replace => ../daedalus-sdk` 经上方 SDK 兄弟 checkout 解析。
+        # core 检出到 workspace 子目录 daedalus-core,其 go.mod
+        # `replace => ../daedalus-sdk` 经上方 SDK 检出解析。
         uses: actions/checkout@v4
         with:
           repository: Daedalusys/daedalus-core
-          path: ../daedalus-core
+          path: daedalus-core
 
       - name: Set Up Go Toolchain
         # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
@@ -69,22 +71,49 @@ jobs:
 
       - name: Build daedalus-plugin-pack (from daedalus-core)
         # 只构建打包器一个二进制(不构建 core 其余 cmd);-h 冒烟确认可执行。
+        # 路径注意:上方 checkout 的 path 是相对 GITHUB_WORKSPACE 的子目录,
+        # 故 core 在 workspace 内的 daedalus-core/ 而非 ../daedalus-core 平级
+        # 目录(Action 不允许检出逃出 workspace),此处须用子目录相对路径。
+        # core 自身 go.mod 的 `replace => ../daedalus-sdk` 从该子目录出发恰好
+        # 解析到上方 SDK 检出。
         shell: bash
         run: |
-          (cd ../daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
-          ../daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
+          (cd daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
+          daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
+
+      - name: Materialize blueprint embed data (//go:embed 源)
+        # 同 test.yml:blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed
+        # 目标但为 gitignored 构建产物,全新 checkout 无此目录 → go build 报
+        # "no matching files found"。照抄 core `just blueprint-embed` 配方,从
+        # 已入库的事实源 blueprint/blueprints/ rsync 出嵌入目录。
+        shell: bash
+        run: |
+          mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
+          rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
       - name: Build 6 plugins & pack 6 zips
         # 每个 sub-module 独立 go build(monorepo 无共享 go.mod);zip 打到暂存
         # 目录 /tmp/release-zips/(不在插件源目录内——若 -out 落在 -in 目录里,
         # 重跑时旧 zip 会被 collectEntries 打进新 zip,zip-in-zip 递归膨胀)。
+        # 打包源必须走"暂存目录"而非插件源目录:照抄 core `just plugin-pack`
+        # 配方——暂存只放 daedalus.plugin.json + bin/daedalus-<cap>。直接 -in
+        # "$cap" 会把 cmd/*.go + go.mod + go.sum + testdata 全打进 zip,解包进
+        # core 镜像树安装态后泄漏源码进 /opt,违反零残留断言(CI build.yml
+        # "Verify Image Zero-Residue" 步 find /opt -name go.mod 实测暴露)。
+        # blueprint 的 blueprints/ 数据已 //go:embed 进二进制,同样不入 zip。
         shell: bash
         run: |
           mkdir -p /tmp/release-zips
           for cap in fs shell pkg sysinfo service blueprint dupe; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
-            ../daedalus-core/bin/daedalus-plugin-pack -in "$cap" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
+            stage="/tmp/release-zips-stage/$cap"
+            rm -rf "$stage"
+            mkdir -p "$stage/bin"
+            cp -f "$cap/daedalus.plugin.json" "$stage/daedalus.plugin.json"
+            cp -f "$cap/bin/daedalus-$cap" "$stage/bin/daedalus-$cap"
+            chmod 0755 "$stage/bin/daedalus-$cap"
+            daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
           done
           ls -la /tmp/release-zips/
 
@@ -108,7 +137,11 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
           else
+            # --target "$GITHUB_SHA":dispatch 创建的 release/tag 默认落**默认分支**
+            # HEAD(v0.1.0 即因此错指 main 而非触发 head);显式指向本次 run 的实际
+            # commit,保证 tag 落点与构建产物源码一致。push v* 时二者本就相同。
             gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
               --title "daedalus-plugins $TAG" \
               --notes "6 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint),供 daedalus-core 镜像构建经 fetch-plugins.sh / build.yml 拉取解压。"
           fi
