@@ -87,6 +87,11 @@ daedalus-plugins/
 - **Blueprint 数据单一事实源**: `blueprint/blueprints/<id>/` 是唯一权威;主仓 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/` 供 `//go:embed`,**复制产物不入库**。
 - **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 4 个不写。`name="*"` 匹配所有资源。
 - **i18n**: locale 文件在 `<cap>/i18n/<locale>.json` (POSIX 下划线命名);manifest 声明 `"i18n": ["en_US", "zh_CN"]` 数组,en_US 必定位兜底。
+- **禁止注释引用计划编号**: `todo N` / `决策 N` / `oracle review` / `round-N` 等进度信息写 commit message 或 `.omo/plans/`,不进源码注释。
+- **注释只写 why,不写 what**: 代码可自解释处不加注释。
+- **单文件注释密度软上限 ~15%**: 后续可接 CI 门禁。
+- **跨仓/跨语言对齐注释不写精确行号**: `py:43-53` 这类行号会腐烂,只写行为语义。
+- **文件头 ≤8 行**: 一句 what + 关键 invariant + 指回 README/AGENTS 的链接。
 
 ## 跨仓 release 流程
 

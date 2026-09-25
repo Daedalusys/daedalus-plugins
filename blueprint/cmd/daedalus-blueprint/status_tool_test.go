@@ -57,7 +57,6 @@ func TestStatusTool_Happy(t *testing.T) {
 // TestStatusTool_Installed 目标目录存在文件时 installed=true 且 content_hash 非空。
 func TestStatusTool_Installed(t *testing.T) {
 	a := newTestApp(t)
-	// 在 outputDirs 第一个目录放一个文件,模拟已安装。
 	dir := a.outputDirs[0]
 	if dir == "" {
 		t.Skip("outputDirs 为空")
@@ -91,7 +90,6 @@ func seedAppliedPlan(t *testing.T, a *app, name string) (planID, removeToken str
 	t.Helper()
 	planID = newPlanID()
 	tok := blueprint.GenerateConfirmToken(planID)
-	// 消费 plan token(模拟 apply 成功)。
 	if err := blueprint.VerifyConfirmToken(planID, tok); err != nil {
 		t.Fatalf("预消费 plan token 失败: %v", err)
 	}
@@ -163,7 +161,6 @@ func TestRemoveTool_PlanNotApplied(t *testing.T) {
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
 	session, ctx := connectServer(t, a)
 
-	// seed 一个 plan 但不 apply(Applied 保持零值 false,模拟 render 后未 apply)。
 	planID := newPlanID()
 	tok := blueprint.GenerateConfirmToken(planID)
 	tmp := t.TempDir()
@@ -183,7 +180,6 @@ func TestRemoveTool_PlanNotApplied(t *testing.T) {
 		t.Errorf("未 apply 的 plan 应被拒, 得到: %s", text)
 	}
 
-	// F2 R1 回归:被拒的 remove 未消费 apply 令牌 → 原始 confirm_token 仍可成功 apply。
 	res2, text2 := callText(t, session, ctx, "blueprint_apply", map[string]any{
 		"name": "nginx-vhost", "plan_id": planID, "confirm_token": tok.Token,
 	})
@@ -198,7 +194,6 @@ func TestRemoveTool_NoFile(t *testing.T) {
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
 	session, ctx := connectServer(t, a)
 
-	// seed 已 apply 的 plan 但不写文件。
 	planID := newPlanID()
 	tok := blueprint.GenerateConfirmToken(planID)
 	_ = blueprint.VerifyConfirmToken(planID, tok)

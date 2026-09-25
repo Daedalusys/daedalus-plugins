@@ -4,6 +4,5 @@
 # 仅使用白名单命令 haproxy(严格子集,与 policy.toml [blueprints].post_check_commands 一致)。
 set -eu
 
-# 检查现有主配置语法
 haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null 2>&1
 exit $?

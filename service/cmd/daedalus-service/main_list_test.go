@@ -1,8 +1,7 @@
-// todo 7 的 service.list 工具层测试。systemctl 注入复用 main_test.go 的
-// fakeSystemctl 机制(KEY=VALUE capture + heredoc 打印固定 list-units 表),
-// 与 service.query 测试同型:夹具确定性 + 零触碰宿主 systemd。
-// 与 main_test.go 分文件的原因:250 纯 LOC 上限(T6 已把 main_test.go 压到
-// 238,余量不足以容纳 list 全谱测试)。
+// service.list 工具层测试。systemctl 注入复用 main_test.go 的 fakeSystemctl
+// 机制(KEY=VALUE capture + heredoc 打印固定 list-units 表),与 service.query
+// 测试同型:夹具确定性 + 零触碰宿主 systemd。与 main_test.go 分文件的原因是
+// 250 纯 LOC 上限。
 package main
 
 import (
@@ -40,7 +39,7 @@ func callListTool(t *testing.T, session *mcp.ClientSession, ctx context.Context,
 // 夹具:两行带 ● 状态字形前缀、一行无前缀(未激活单元的空 glyph 位),
 // 描述列含空格(验证只取 UNIT/LOAD/ACTIVE/SUB 前四列),外加一行无单元名
 // 的垃圾行(应被静默跳过)。sshd/nginx 行均为 loaded active running,
-// cron 行为 loaded inactive dead(计划 Happy QA 的 active 断言素材)。
+// cron 行为 loaded inactive dead(active 断言素材)。
 const listFixtureOutput = "● nginx.service loaded active running A high performance web server and a reverse proxy server\n" +
 	"  cron.service loaded inactive dead Regular background program processing daemon\n" +
 	"● sshd.service loaded active running OpenBSD Secure Shell server\n" +
@@ -49,7 +48,7 @@ const listFixtureOutput = "● nginx.service loaded active running A high perfor
 // TestServiceList_Happy 端到端:夹具三单元 → 回包是 JSON 数组、按 Name
 // 升序、Properties 逐字来自夹具(反造假:凭输入拼数组元素的 handler 必然
 // 在此失败)。nil filter 走默认 "*":argv 恰为五旗标、**无追加过滤参数**
-// (capture 全等钉死,同时排除 shell 包装)。
+// (capture 全等固定,同时排除 shell 包装)。
 func TestServiceList_Happy(t *testing.T) {
 	capture := fakeSystemctl(t, listFixtureOutput)
 	session, ctx := connectSession(t)
@@ -89,7 +88,7 @@ func TestServiceList_Happy(t *testing.T) {
 			t.Errorf("%s Properties = %v, want %v(夹具逐字)", unit, got, want)
 		}
 	}
-	// 反造假硬断言:响应文本携带夹具真实键值(计划 pin 的 nginx active)。
+	// 反造假硬断言:响应文本携带夹具真实键值(nginx active)。
 	if !strings.Contains(text, `"ActiveState": "active"`) {
 		t.Errorf("回包缺夹具值 \"ActiveState\": \"active\":\n%s", text)
 	}

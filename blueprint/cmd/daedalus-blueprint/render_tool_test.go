@@ -1,6 +1,6 @@
 package main
 
-// render_tool_test.go —— blueprint_render 的内存内 MCP 往返测试(todo 18)。
+// render_tool_test.go —— blueprint_render 的内存内 MCP 往返测试。
 //
 // happy + 6 失败分支(schema 不匹配 / 缺必填 / 渲染错误 / 明文 password /
 // 目标路径越界 / 未知蓝图),外加渲染正确性测试(nginx-vhost 输出含
@@ -52,7 +52,7 @@ func TestRenderTool_HappyNginxVhost(t *testing.T) {
 		t.Errorf("target = %q, want /etc/nginx/conf.d/example.com.conf", out.TargetPath)
 	}
 	// 渲染正确性:nxginx-vhost 输出含 server_name 与必经的 proxy 头、
-	// 且 nginx 内置变量 $host 原文保留(learnings 记录的隐患回归钉)。
+	// 且 nginx 内置变量 $host 原文保留(隐患回归钉)。
 	if !strings.Contains(out.RenderedContent, "server_name example.com;") {
 		t.Errorf("渲染输出缺 server_name 段:\n%s", out.RenderedContent)
 	}
@@ -156,18 +156,6 @@ func TestRenderTool_SecretRefOK(t *testing.T) {
 }
 
 // TestRenderTool_OutputDirEscapes 目标路径越界(非白名单目录)→ 拒绝。
-//
-// 用 postgres-db 的 db_name 注入路径穿越字符(如 "../" )——output_path_template
-// 的 {db_name} 直接替换,若容许穿越会生成越出 /etc/postgresql 的路径。
-// v1 的 schema 对 db_name 有 `^[a-z_][a-z0-9_]*$` pattern 挡穿越,故本测试
-// 用 haproxy-backend 的 name(同样受 pattern 约束)……为确定性,改用 redis-acl
-// 的 user(允许大写/下划线/连字符,不含 '/')不产生穿越。因此越界测试改用
-// 直接构造一个带斜杠的 name 走 haproxy?——haproxy name pattern `^[a-z0-9-]+$`
-// 也不含 '/'。结论:schema pattern 已把路径穿越在源头拦死。
-//
-// 为取得"目标路径越界"的失败支,改用 nginx-reverse-proxy 的 name(schema
-// `^[a-zA-Z0-9_-]+$`)亦不含 '/'。最终越界支通过**直接构造 path 模板**而非
-// 真实蓝图数据来钉:见下方 TestValidateOutputPath。
 func TestRenderTool_OutputDirEscapes(t *testing.T) {
 	// 越界校验是纯函数,直接测 validateOutputPath(render 调用路径已有
 	// schema pattern 兜底穿越,真实蓝图数据无法构造含 '/' 的 name)。
@@ -182,12 +170,6 @@ func TestRenderTool_OutputDirEscapes(t *testing.T) {
 	}
 }
 
-// TestRenderTool_TemplateError 渲染期错误→用带缺失键构造(渲染错误分支)。
-//
-// 真实嵌入蓝图的模板都已通过 Parse;渲染错误(Execute 缺键)由 missingkey=error
-// 触发。任何 schema 缺 default 字段且模板访问它时即缺键错误——但所有蓝图
-// 模板访问的字段都有 schema 约束(required 或 default)。为确定性钉住该分支,
-// 直接测 fillTemplateData 与 missingkey=error 语义(不破坏真实蓝图数据)。
 // templateParseStrict 用 missingkey=error 解析模板(与编译期同 Option)。
 func templateParseStrict(name, body string) (*template.Template, error) {
 	return template.New(name).Option("missingkey=error").Parse(body)

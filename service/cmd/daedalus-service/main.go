@@ -1,25 +1,11 @@
 // Command daedalus-service 是 Service 观测能力 MCP 服务器(stdio JSON-RPC,只读)。
 //
-// 计划 todo 5 骨架 + todo 6 service.query + todo 7 service.list:类型化
-// systemd 单元观测(属性查询 + 服务列表),返回 internal/objectmodel 的
-// ServiceState 载荷(kind/name/desired_state/properties)。service.list 的
-// 处理器与解析住在同包 list.go(250 纯 LOC 上限下的包内拆分);本文件
-// 不引入 applyPolicy、任何变更操作或第二策略事实源。
+// 类型化 systemd 单元观测(属性查询 + 服务列表),返回 objectmodel.ServiceState
+// 载荷;service.list 的处理器与解析住在同包 list.go。载荷 schema 单一事实源在
+// daedalus/core/internal/objectmodel/objectmodel.go(JSON 清单不能携带注释)。
 //
-// 清单交叉引用:本插件 manifest 的 resources 声明("kind": "service")与
-// 本服务器返回的载荷类型,其 schema 单一事实源均在
-// daedalus/core/internal/objectmodel/objectmodel.go;事务与执行模型见计划
-// .omo/plans/aios-object-model-alignment.md 的 Object Model 段与决策 25
-// (JSON 清单不能携带注释,故引用住本文件头)。
-//
-// 安全边界:单元名/过滤模式先经白名单正则 + 遍历检查(argv 构造前拒绝),
-// 再经 os/exec **argv 直发**执行 systemctl(绝不经过 sh -c);属性查询
-// 限定 curated 只读白名单。
-//
-// 结构镜像 cmd/daedalus-pkg/main.go(main + isCleanShutdown 逐字同型,
-// textResult/jsonResult/raisedError 按家族约定各服务器各自持有本地副本);
-// 协议协商由 go-sdk v1.7.0 默认处理:同时接受 2024-11-05(copilot exec.ts
-// 握手)与 2025-03-26(76 脚本 binary_tools)客户端,不加任何自定义版本逻辑。
+// 安全边界:单元名/过滤模式先经白名单正则 + 遍历检查(argv 构造前拒绝),再经
+// os/exec argv 直发执行 systemctl(绝不经过 sh -c);属性查询限定只读白名单。
 package main
 
 import (
@@ -44,22 +30,18 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
-// serverName 为 MCP 服务器标识,与插件 id "daedalus.service" 的短名对应。
 const serverName = "daedalus-service"
 
-// systemctlBinary 是 systemctl 的绝对路径。包级变量而非常量的唯一理由:
-// 测试注入 t.TempDir() 下的 KEY=VALUE 夹具,永不触碰宿主真实 systemd。
-// 生产态固定为镜像内的 /usr/bin/systemctl(argv 直发,无 $PATH 查找)。
+// systemctlBinary 是 systemctl 的绝对路径。包级变量而非常量的唯一理由:测试
+// 注入 t.TempDir() 下的夹具,永不触碰宿主真实 systemd。
 var systemctlBinary = "/usr/bin/systemctl"
 
-// systemctlTimeout 为单次 systemctl 调用的兜底超时(30s)。取值与镜像
-// policy.toml [shell].timeout_ms 缺省一致;本服务不加载 policy.toml
-// (仅只读查询,无策略面),故以编译期常量钉死,改动无需运行时配置。
+// systemctlTimeout 为单次 systemctl 调用的兜底超时(30s)。本服务不加载
+// policy.toml(仅只读查询,无策略面),故以编译期常量固定。
 const systemctlTimeout = 30 * time.Second
 
-// queryProperties 是 service.query 的 curated 只读属性白名单(计划 todo 6
-// 逐字 pin 的 7 项)。systemctl show 对未知单元也会回 LoadState=not-found,
-// 因此"单元不存在"经 LoadState 判定而非退出码。
+// queryProperties 是 service.query 的只读属性白名单。systemctl show 对未知单元
+// 也会回 LoadState=not-found,故"单元不存在"经 LoadState 判定而非退出码。
 var queryProperties = []string{
 	"ActiveState",
 	"SubState",
@@ -70,12 +52,10 @@ var queryProperties = []string{
 	"FragmentPath",
 }
 
-// unitNamePattern 是单元名白名单正则:仅字母/数字/下划线/点/@/-。
-// 天然排除路径分隔符、shell 元字符、空白与注入语法;".." 遍历序列
-// 虽能通过字符类,由 normalizeUnitName 的显式检查兜底。
+// unitNamePattern 是单元名白名单正则:仅字母/数字/下划线/点/@/-,天然排除
+// 路径分隔符、shell 元字符、空白与注入语法;".." 遍历由 normalizeUnitName 兜底。
 var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
 
-// serviceQueryIn 对应 service.query(name: str)(必填)。
 type serviceQueryIn struct {
 	Name string `json:"name"`
 }
@@ -104,8 +84,8 @@ func isCleanShutdown(err error) bool {
 	return strings.HasPrefix(err.Error(), "server is closing")
 }
 
-// newServer 构造 MCP 服务器实例并注册已落位工具(测试与 main 共用同一
-// 构造入口)。todo 6: service.query;todo 7: service.list。
+// 协议协商由 go-sdk 默认处理:同时接受 copilot exec.ts 握手与 76 脚本 binary_tools
+// 两种客户端,不加任何自定义版本逻辑。
 func newServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    serverName,
@@ -155,9 +135,6 @@ func newServer() *mcp.Server {
 	return server
 }
 
-// handleServiceQuery 是 service.query 的处理器:名字校验(argv 构造前
-// fail-closed)→ systemctl show 直发 → LoadState 判缺 → ServiceState
-// JSON 载荷。校验/执行失败经 raisedError 呈现为 isError 工具结果。
 func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQueryIn) (*mcp.CallToolResult, any, error) {
 	const toolName = "service.query"
 
@@ -169,7 +146,7 @@ func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQ
 	if err != nil {
 		return raisedError(toolName, err), nil, nil
 	}
-	// 计划 pin:not-found 与 masked 两种 LoadState 皆以逐字文案拒绝。
+	// not-found 与 masked 两种 LoadState 皆以逐字文案拒绝。
 	if ls := props["LoadState"]; ls == "not-found" || ls == "masked" {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("error: unit %s not found", unit)}},
@@ -179,21 +156,18 @@ func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQ
 	result := objectmodel.ServiceState{
 		Kind:         string(objectmodel.KindService),
 		Name:         unit,
-		DesiredState: "", // 观测态无期望(查询路径恒空,计划 pin)
+		DesiredState: "", // 观测态无期望(查询路径恒空)
 		Properties:   props,
 	}
-	// todo 20:成功观测 → state 记忆一条(Name=单元名,载荷=回包同一份
-	// JSON);best-effort,失败只落 stderr,不影响下面的工具返回值。
+	// 成功观测 → state 记忆一条(Name=单元名,载荷=回包同一份 JSON);best-effort,
+	// 失败只落 stderr,不影响下面的工具返回值。
 	recordServiceState(unit, result)
 	return jsonResult(result), nil, nil
 }
 
-// normalizeUnitName 校验单元名并补全隐式 .service 后缀。拒绝路径:
-//  1. 空串;
-//  2. 不匹配白名单正则(排除 '/'、'\'、shell 元字符、空白、非 ASCII);
-//  3. 补后缀后含 ".." 遍历序列(字符类放行点号,此检查覆盖 ".."、
-//     尾点拼接出的 "x..service" 等形态)。
-//
+// normalizeUnitName 校验单元名并补全隐式 .service 后缀。拒绝:空串、不匹配
+// 白名单正则(排除 '/'、'\'、shell 元字符、空白、非 ASCII)、补后缀后含 ".."
+// 遍历序列(字符类放行点号,此检查覆盖 "x..service" 等形态)。
 // 一切拒绝都发生在拼 argv 之前——非法名永不抵达 exec。
 func normalizeUnitName(name string) (string, error) {
 	if name == "" {
@@ -211,9 +185,8 @@ func normalizeUnitName(name string) (string, error) {
 	return name, nil
 }
 
-// runSystemctlShow argv 直发执行 `systemctl show <unit> --property=...`
-// (逐项重复 --property,systemctl 官方支持形态;绝不经过 sh -c)。
-// 输出按 KEY=VALUE 逐行解析,键为 systemctl 属性名原文。
+// runSystemctlShow argv 直发执行 `systemctl show <unit> --property=...`(逐项
+// 重复 --property;绝不经过 sh -c),输出按 KEY=VALUE 逐行解析。
 func runSystemctlShow(ctx context.Context, unit string) (map[string]string, error) {
 	execCtx, cancel := context.WithTimeout(ctx, systemctlTimeout)
 	defer cancel()
@@ -238,8 +211,6 @@ func runSystemctlShow(ctx context.Context, unit string) (map[string]string, erro
 	return parseKeyValueLines(stdout.String()), nil
 }
 
-// parseKeyValueLines 解析 systemctl show 的 KEY=VALUE 输出:按首个 '='
-// 切分,空值合法(如 ActiveEnterTimestamp=),无 '=' 的行静默跳过。
 func parseKeyValueLines(out string) map[string]string {
 	props := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
@@ -252,17 +223,15 @@ func parseKeyValueLines(out string) map[string]string {
 	return props
 }
 
-// textResult 构造成功结果(单文本块,内容原样不 JSON 包装)。
-// 家族约定:各能力服务器各自持有本组 helper 的本地副本。
+// textResult 构造成功结果(单文本块);家族约定:helper 各服务器各持本地副本。
 func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}
 }
 
-// jsonResult 对应 Python FastMCP 对非字符串返回值的序列化:
-// json.dumps(..., ensure_ascii=False, indent=2)。Go 端用
-// SetEscapeHTML(false) + SetIndent(" ", 两空格) 等价实现。
+// jsonResult 对应 Python FastMCP 的 json.dumps(..., ensure_ascii=False,
+// indent=2);Go 端用 SetEscapeHTML(false) + SetIndent("  ") 等价实现。
 func jsonResult(v any) *mcp.CallToolResult {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -275,8 +244,8 @@ func jsonResult(v any) *mcp.CallToolResult {
 	return textResult(strings.TrimSuffix(buf.String(), "\n"))
 }
 
-// raisedError 构造 isError=true 的工具错误结果,文本形态与
-// FastMCP 未捕获异常转换一致:"Error executing tool <name>: <消息>"。
+// raisedError 构造 isError=true 的工具错误结果,文本形态与 FastMCP 未捕获异常
+// 转换一致:"Error executing tool <name>: <消息>"。
 func raisedError(tool string, err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error executing tool %s: %v", tool, err)}},

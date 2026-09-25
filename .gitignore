@@ -3,3 +3,6 @@
 # 不入库;源码侧 blueprints/ 是唯一事实源。
 blueprint/cmd/daedalus-blueprint/blueprints/
 bin/
+
+# 本地 go.work 桥(AGENTS 允许本地生成;不入库)
+go.work

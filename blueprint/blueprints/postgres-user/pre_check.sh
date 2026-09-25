@@ -7,7 +7,6 @@ set -eu
 
 DB_NAME="${1:?缺少参数:数据库名}"
 
-# 查询目标数据库是否已存在
 EXISTS=$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null)
 if [ "$EXISTS" != "1" ]; then
     echo "数据库 ${DB_NAME} 不存在,无法授予权限" >&2

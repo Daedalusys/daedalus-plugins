@@ -1,15 +1,9 @@
-// Package main 的 schema_poc_test.go 是 plan daedalus-blueprint-p1 todo 1 的
-// 选型 PoC(仅测试文件,不进生产代码)。
+// Package main 的 schema_poc_test.go 是选型 PoC(仅测试文件,不进生产代码)。
 //
-// 目标:验证 github.com/google/jsonschema-go v0.4.3(已在 go.sum)能否从
-// 独立的 JSON Schema 文档(而非 struct tag 推断/内联 struct 字面量)加载
-// 并校验 JSON input。这与 daedalus-pkg 的用法不同:
-//   - daedalus-pkg 用 jsonschema.Schema{...} Go struct 字面量内联构建 MCP
-//     InputSchema(见 cmd/daedalus-pkg/main.go:93);
-//   - 本 PoC 验证"蓝图加载 schema.json 文件"的路径:json.Unmarshal → Resolve → Validate。
-//
-// 库版本 v0.4.3 无 jsonschema.Compile 函数(doc.go 说明该版本加载方式即
-// encoding/json 反序列化 + Schema.Resolve),故以等价的三步流程演示。
+// 目标:验证 github.com/google/jsonschema-go 能否从独立的 JSON Schema 文档
+// (而非 struct tag 推断/内联 struct 字面量)加载并校验 JSON input——即蓝图
+// 加载 schema.json 文件的路径:json.Unmarshal → Resolve → Validate。
+// 该版本无 jsonschema.Compile,故以等价三步流程演示。
 package main
 
 import (
@@ -51,17 +45,14 @@ const schemaSimple = `{
 func TestSchemaPoC_SimpleObject(t *testing.T) {
 	rs := compileJSON(t, schemaSimple)
 
-	// 合法输入:name 满足必填 + 类型,age 可选,无多余字段。
 	if err := rs.Validate(map[string]any{"name": "alice", "age": 30}); err != nil {
 		t.Errorf("合法输入校验失败: %v", err)
 	}
 
-	// 非法输入一:缺少必填字段 name。
 	err := rs.Validate(map[string]any{"age": 30})
 	if err == nil {
 		t.Fatal("缺少必填字段应校验失败,却通过了")
 	}
-	// 错误需含对象路径(validating root)、规则(required)与缺失字段名。
 	// 注:required 在对象层求值,字段路径前缀是对象自身路径,缺失字段名列在消息内。
 	for _, want := range []string{"validating root", "required", "missing properties", `"name"`} {
 		if !strings.Contains(err.Error(), want) {
@@ -69,19 +60,16 @@ func TestSchemaPoC_SimpleObject(t *testing.T) {
 		}
 	}
 
-	// 非法输入二:name 类型错误(string 字段给了数字)。
 	err = rs.Validate(map[string]any{"name": 42})
 	if err == nil {
 		t.Fatal("类型错误应校验失败,却通过了")
 	}
-	// 错误需含字段路径、规则(type)与实际/期望类型。
 	for _, want := range []string{"properties/name", "type:", "has type", "want"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("错误信息缺少 %q,实际: %v", want, err)
 		}
 	}
 
-	// 非法输入三(附加验证):additionalProperties:false 应拒绝未知字段。
 	err = rs.Validate(map[string]any{"name": "alice", "hacker": true})
 	if err == nil {
 		t.Fatal("additionalProperties:false 应拒绝未知字段,却通过了")
@@ -118,7 +106,6 @@ const schemaNested = `{
 func TestSchemaPoC_NestedObject(t *testing.T) {
 	rs := compileJSON(t, schemaNested)
 
-	// 合法输入:嵌套结构完整且满足约束。
 	if err := rs.Validate(map[string]any{
 		"app":    "demo",
 		"config": map[string]any{"timeout": 30, "retries": 3},
@@ -126,7 +113,6 @@ func TestSchemaPoC_NestedObject(t *testing.T) {
 		t.Errorf("合法输入校验失败: %v", err)
 	}
 
-	// 非法输入一:config 缺内部必填字段 timeout。
 	err := rs.Validate(map[string]any{
 		"app":    "demo",
 		"config": map[string]any{"retries": 3},
@@ -134,14 +120,12 @@ func TestSchemaPoC_NestedObject(t *testing.T) {
 	if err == nil {
 		t.Fatal("嵌套必填缺失应校验失败,却通过了")
 	}
-	// 错误需含完整嵌套链 validating /properties/config 与缺失字段名。
 	for _, want := range []string{"validating /properties/config", "required", "missing properties", `"timeout"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("错误信息缺少 %q,实际: %v", want, err)
 		}
 	}
 
-	// 非法输入二:内层 additionalProperties:false 拒绝未知字段。
 	err = rs.Validate(map[string]any{
 		"app":    "demo",
 		"config": map[string]any{"timeout": 30, "sneaky": 1},
@@ -155,7 +139,6 @@ func TestSchemaPoC_NestedObject(t *testing.T) {
 		}
 	}
 
-	// 非法输入三:内层 minimum 边界违规(timeout < 1)。
 	err = rs.Validate(map[string]any{
 		"app":    "demo",
 		"config": map[string]any{"timeout": 0},
@@ -185,17 +168,14 @@ const schemaEnum = `{
 func TestSchemaPoC_EnumObject(t *testing.T) {
 	rs := compileJSON(t, schemaEnum)
 
-	// 合法输入:mode 命中枚举值之一。
 	if err := rs.Validate(map[string]any{"mode": "auto", "note": "ok"}); err != nil {
 		t.Errorf("合法输入校验失败: %v", err)
 	}
 
-	// 非法输入:mode 值不在枚举内。
 	err := rs.Validate(map[string]any{"mode": "turbo"})
 	if err == nil {
 		t.Fatal("枚举外值应校验失败,却通过了")
 	}
-	// 错误需含字段路径、规则(enum)、实际值与期望枚举集合。
 	for _, want := range []string{"properties/mode", "enum:", "does not equal any of"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("错误信息缺少 %q,实际: %v", want, err)
@@ -234,6 +214,6 @@ func TestSchemaPoC_CompileEntry(t *testing.T) {
 	rs := compileJSON(t, schemaSimple)
 	_ = rs // 编译入口已由 compileJSON 演示
 	// 若想确认 API 无 Compile,可执行 go doc 查询;此处保持零运行断言,
-	// 只把结论写进 notepad(选型结论:JSON 文档加载路径 = Unmarshal + Resolve + Validate)。
+	// 结论:JSON 文档加载路径 = Unmarshal + Resolve + Validate。
 	fmt.Println("jsonschema-go v0.4.3 加载路径:json.Unmarshal → Schema.Resolve → Resolved.Validate")
 }

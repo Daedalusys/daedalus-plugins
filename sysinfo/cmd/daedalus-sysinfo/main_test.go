@@ -138,7 +138,7 @@ func TestToolsList_MatchesPySpec(t *testing.T) {
 		byName[tool.Name] = tool
 	}
 	slices.Sort(names)
-	// 与 sysinfo_server.py 函数名逐字一致(py:22,59,133)。
+	// 与 sysinfo_server.py 函数名逐字一致。
 	if want := []string{"hardware_info", "network_status", "os_release"}; !slices.Equal(names, want) {
 		t.Errorf("工具名 = %v, want %v", names, want)
 	}
