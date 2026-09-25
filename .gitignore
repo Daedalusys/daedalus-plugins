@@ -4,5 +4,10 @@
 blueprint/cmd/daedalus-blueprint/blueprints/
 bin/
 
+# `go build ./...` 会把可执行文件直接落在各 cap 模块根(正式产物路径是 `<cap>/bin/`,
+# 上一条已覆盖)。这些 11–15MiB 的二进制不忽略,会撞 jj snapshot.max-new-file-size=1MiB,
+# 每次 snapshot 刷一屏拒绝警告。
+/*/daedalus-*
+
 # 本地 go.work 桥(AGENTS 允许本地生成;不入库)
 go.work

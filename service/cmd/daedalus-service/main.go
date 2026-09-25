@@ -2,7 +2,7 @@
 //
 // 类型化 systemd 单元观测(属性查询 + 服务列表),返回 objectmodel.ServiceState
 // 载荷;service.list 的处理器与解析住在同包 list.go。载荷 schema 单一事实源在
-// daedalus/core/internal/objectmodel/objectmodel.go(JSON 清单不能携带注释)。
+// daedalus-sdk/objectmodel/envelope.go 与 objectmodel.go(JSON 清单不能携带注释)。
 //
 // 安全边界:单元名/过滤模式先经白名单正则 + 遍历检查(argv 构造前拒绝),再经
 // os/exec argv 直发执行 systemctl(绝不经过 sh -c);属性查询限定只读白名单。
@@ -105,7 +105,7 @@ func newServer() *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "service.query",
-		Description: "只读查询 systemd 单元属性。\n\n通过 `systemctl show <name>.service` 读取固定白名单内的\n单元属性(ActiveState/SubState/MainPID/LoadState/UnitFileState/\nActiveEnterTimestamp/FragmentPath)。\n\n参数：\n    name: 单元名,省略 .service 后缀时自动补全(例如 'sshd')。\n\n返回：\n    Service 资源的类型化状态对象(kind/name/desired_state/properties)。",
+		Description: "只读查询 systemd 单元属性。\n\n通过 `systemctl show <name>.service` 读取固定白名单内的\n单元属性(ActiveState/SubState/MainPID/LoadState/UnitFileState/\nActiveEnterTimestamp/FragmentPath)。\n\n参数：\n    name: 单元名,省略 .service 后缀时自动补全(例如 'sshd')。\n\n返回：\n    Service 资源的类型化状态对象(kind/name/desired_state/properties/conditions)。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -158,6 +158,7 @@ func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQ
 		Name:         unit,
 		DesiredState: "", // 观测态无期望(查询路径恒空)
 		Properties:   props,
+		Conditions:   deriveConditions(props),
 	}
 	// 成功观测 → state 记忆一条(Name=单元名,载荷=回包同一份 JSON);best-effort,
 	// 失败只落 stderr,不影响下面的工具返回值。
