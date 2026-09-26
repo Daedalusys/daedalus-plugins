@@ -5,8 +5,9 @@
 **Siblings:** `../daedalus-core/` (Daedalusys, runtime + image), `../daedalus-sdk/` (11 安全核心包)
 
 ## OVERVIEW
-Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。6 个官方 Go 能力插件
-(`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint`,`runtime=native`) 的 monorepo,
+Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。9 个 Go 能力插件
+(`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,
+另有 `dupe` / `trace` / `proc` 观测型插件尚未走 release 供料,均 `runtime=native`) 的 monorepo,
 独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
 
 每个插件一个子目录、内含 `daedalus.plugin.json` (manifest) + `cmd/` (Go 源码) +
@@ -20,7 +21,7 @@ Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。6 �
 ## STRUCTURE
 ```
 daedalus-plugins/
-├── go.work                          # 聚合 6 个插件模块 (use .)
+├── go.work                          # 聚合 9 个插件模块 (use .)
 ├── fs/                              # daedalus.fs  - 路径作用域文件读写
 │   ├── daedalus.plugin.json
 │   ├── cmd/daedalus-fs/             # Go 源码 (go-sdk stdio MCP 服务器)
@@ -69,6 +70,7 @@ daedalus-plugins/
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy` (post_check 钩子) | 6 参数化配置蓝图 (nginx/postgres/redis/haproxy) 渲染/应用 |
 | `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.disk-clean`) |
 | `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图 (L0, 游标分页) — **不是** 重放执行(那是 030 workflow),也不做链完整性校验(`daedalus-audit verify`) |
+| `proc/` | `daedalus.proc` | `proc_list` / `proc_tree` / `proc_fds` / `proc_listen` / `proc_cgroup` | —(直读 `/proc`) | 进程/fd/监听端口/cgroup 只读侦察 (L0, 零 exec) — **不是** 进程控制(kill/signal/renice 走 `daedalus-tx`) |
 
 ## 命名语义 (目录名 ≠ 系统组件,是"能力提供者")
 

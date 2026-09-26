@@ -1,5 +1,5 @@
 ---
-# daedalus-plugins 仓 CI:6 个 sub-module 独立 `go build` + `go test` + i18n
+# daedalus-plugins 仓 CI: 9 个 sub-module 独立 `go build` + `go test` + i18n
 # 同步校验。跨仓 release 流程见 AGENTS.md「跨仓 release 流程」段。
 #
 # 布局约定:daedalus-sdk 必须检出到 workspace 子目录 daedalus-sdk(GH Actions
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   test:
-    name: Test (8 sub-modules build + test + i18n)
+    name: Test (9 sub-modules build + test + i18n)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -56,12 +56,12 @@ jobs:
           mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
           rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
-      - name: Build & Test 8 sub-modules
+      - name: Build & Test 9 sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe trace; do
+          for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)
@@ -69,12 +69,12 @@ jobs:
 
       - name: i18n sync validation
         # manifest 的 i18n 声明 ↔ i18n/ 实物双向校验(声明有但实物无 / 实物有
-        # 但声明无均 fail)。6 插件当前均无 i18n 字段与 i18n/ 目录,此门禁防
+        # 但声明无均 fail)。各插件当前均无 i18n 字段与 i18n/ 目录,此门禁防
         # 未来漂移;en_US 必定位兜底约束由 copilot 侧 i18n_keys.test.sh 覆盖
         # (copilot 留 core 仓)。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe trace; do
+          for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
             manifest="$cap/daedalus.plugin.json"
             i18n_dir="$cap/i18n"
             declared=$(jq -r '.i18n // [] | .[]' "$manifest" 2>/dev/null || true)

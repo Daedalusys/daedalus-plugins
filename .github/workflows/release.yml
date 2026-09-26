@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/release-zips
-          for cap in fs shell pkg sysinfo service blueprint dupe trace; do
+          for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             stage="/tmp/release-zips-stage/$cap"
