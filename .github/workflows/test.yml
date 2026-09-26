@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   test:
-    name: Test (6 sub-modules build + test + i18n)
+    name: Test (8 sub-modules build + test + i18n)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -56,12 +56,12 @@ jobs:
           mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
           rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
-      - name: Build & Test 6 sub-modules
+      - name: Build & Test 8 sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe; do
+          for cap in fs shell pkg sysinfo service blueprint dupe trace; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)
@@ -74,7 +74,7 @@ jobs:
         # (copilot 留 core 仓)。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe; do
+          for cap in fs shell pkg sysinfo service blueprint dupe trace; do
             manifest="$cap/daedalus.plugin.json"
             i18n_dir="$cap/i18n"
             declared=$(jq -r '.i18n // [] | .[]' "$manifest" 2>/dev/null || true)

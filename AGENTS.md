@@ -68,6 +68,7 @@ daedalus-plugins/
 | `service/` | `daedalus.service` | `service.query` / `service.list` | `objectmodel`、`state`、`dirs` | systemd 单元只读观测 — **不是** systemd 服务,也不改服务状态(走 `daedalus-tx`) |
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy` (post_check 钩子) | 6 参数化配置蓝图 (nginx/postgres/redis/haproxy) 渲染/应用 |
 | `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.disk-clean`) |
+| `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图 (L0, 游标分页) — **不是** 重放执行(那是 030 workflow),也不做链完整性校验(`daedalus-audit verify`) |
 
 ## 命名语义 (目录名 ≠ 系统组件,是"能力提供者")
 
