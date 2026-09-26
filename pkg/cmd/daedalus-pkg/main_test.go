@@ -202,7 +202,7 @@ func TestDnfQuery_EndToEnd_FallbackChain(t *testing.T) {
 	if want := "bash-doc-5.2.15-5.el9.noarch"; text != want {
 		t.Errorf("结果 = %q, want %q", text, want)
 	}
-	want := [][]string{{"rpm", "-q", "--info", "bash-doc"}, {"dnf", "repoquery", "--info", "bash-doc"}}
+	want := [][]string{{"rpm", "-q", "--info", "--", "bash-doc"}, {"dnf", "repoquery", "--info", "--", "bash-doc"}}
 	if !slices.EqualFunc(r.calls, want, slices.Equal) {
 		t.Errorf("调用序列 = %v, want %v", r.calls, want)
 	}
@@ -267,7 +267,7 @@ func TestDnfListInstalled_JSONTextShape(t *testing.T) {
 	if want := "[\n  \"bash-2\",\n  \"zsh-1\"\n]"; text != want {
 		t.Errorf("JSON 文本形态 = %q, want %q", text, want)
 	}
-	if !slices.Equal(r.calls[0], []string{"rpm", "-qa", "*"}) {
+	if !slices.Equal(r.calls[0], []string{"rpm", "-qa", "--", "*"}) {
 		t.Errorf("默认 pattern 未生效: %v", r.calls[0])
 	}
 }
