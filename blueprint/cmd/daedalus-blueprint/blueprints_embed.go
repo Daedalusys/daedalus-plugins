@@ -33,7 +33,7 @@ var knownBlueprintIDs = []string{
 }
 
 // requiredBlueprintFiles 是每个蓝图目录必须齐全的必需文件;其余文件
-// (pre_check.sh / README.md 等)同样被嵌入,但不参与必需性校验。
+// (README.md 等)同样被嵌入,但不参与必需性校验。
 var requiredBlueprintFiles = []string{
 	"manifest.json",
 	"schema.json",

@@ -1,8 +1,0 @@
-#!/bin/sh
-# pre_check.sh — Nginx 虚拟主机蓝图应用前验证
-# 在写入配置前检查现有 nginx 配置是否合法,避免新 vhost 叠加后整体损坏。
-# 仅使用白名单命令 nginx(严格子集,与 policy.toml [blueprints].post_check_commands 一致)。
-set -eu
-
-nginx -t >/dev/null 2>&1
-exit $?

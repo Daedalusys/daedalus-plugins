@@ -73,7 +73,7 @@ func TestApplyTool_Happy(t *testing.T) {
 	if out.ConfigPath == "" || out.AppliedAt == "" {
 		t.Errorf("config_path/applied_at 缺失: %+v", out)
 	}
-	// F2 R2:apply 必须把 remove 令牌回传客户端,且与 plan store 中的存档一致。
+	// apply 必须把 remove 令牌回传客户端,且与 plan store 中的存档一致。
 	if out.RemoveToken == "" {
 		t.Errorf("remove_token 不应为空(否则 blueprint_remove 永不可达)")
 	}

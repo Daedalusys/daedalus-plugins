@@ -84,8 +84,8 @@ func TestStatusTool_Installed(t *testing.T) {
 }
 
 // seedAppliedPlan 构造一个"已 apply"的 plan:seed 进 store + 消费其 token
-// (模拟 blueprint_apply 成功后 token 已消费)+ 置位 Applied(F2 R1 修复后
-// remove 以 Applied 标志判断"已应用")+ 写目标文件到临时目录。
+// (模拟 blueprint_apply 成功后 token 已消费)+ 置位 Applied(remove 以
+// Applied 标志判断"已应用")+ 写目标文件到临时目录。
 // 返回 plan_id 与 remove 命名空间的 token。
 func seedAppliedPlan(t *testing.T, a *app, name string) (planID, removeToken string) {
 	t.Helper()
@@ -155,7 +155,7 @@ func TestRemoveTool_EmptyToken(t *testing.T) {
 }
 
 // TestRemoveTool_PlanNotApplied plan 未 apply(Applied=false)→ 被拒。
-// F2 R1 回归证明:被拒的 remove 不得消费 apply 令牌——remove 被拒后,
+// 回归证明:被拒的 remove 不得消费 apply 令牌——remove 被拒后,
 // 用原始 confirm_token 走 blueprint_apply 仍必须成功(令牌未被误消费)。
 func TestRemoveTool_PlanNotApplied(t *testing.T) {
 	a := newTestApp(t)
