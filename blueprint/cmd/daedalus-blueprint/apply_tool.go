@@ -22,6 +22,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -200,10 +201,13 @@ func handleApply(a *app) func(context.Context, *mcp.CallToolRequest, applyIn) (*
 //
 //   - 每行 = 一条命令,首个 token 为命令名,必须 ∈ PostCheckAllowCommands,
 //     白名单外即整体拒绝;
-//   - 每行经 quoteSplit 引号感知分词后整行 argv 直发(execCmd),变量展开/命令
-//     替换/管道/重定向/sudo 提权全部不可能发生;
-//   - 行内 `{param}` 占位符先经 params 渲染;`#` 注释行与空行跳过;
-//     任一命令非零退出即整体失败;
+//   - 每行经 quoteSplit 引号感知分词,**先分词、后逐 token 渲染 `{param}` 占位符**,
+//     再整行 argv 直发(execCmd)。顺序至关重要:若先替换后分词,含空格的参数值
+//     (如 domain = "a b")会被切成多个 argv token,等效于参数注入;逐 token 替换
+//     保证一个值永远只落在它所属的那一个 token 内。变量展开/命令替换/管道/
+//     重定向/sudo 提权仍然全部不可能发生;
+//   - 白名单校验在**替换后**的 argv[0] 上进行(防参数值把命令名本身改掉);
+//   - `#` 注释行与空行跳过;任一命令非零退出即整体失败;
 //   - 副作用:能力从"任意 shell"收敛为"白名单命令序列"——安全边界要求的取舍。
 func runPostCheck(ctx context.Context, a *app, script string, params map[string]any) error {
 	for _, line := range strings.Split(script, "\n") {
@@ -211,10 +215,12 @@ func runPostCheck(ctx context.Context, a *app, script string, params map[string]
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		line = renderPostCheckLine(line, params)
 		argv, err := quoteSplit(line)
 		if err != nil {
 			return fmt.Errorf("post_check 行解析失败 %q: %w", line, err)
+		}
+		for i, tok := range argv {
+			argv[i] = renderPostCheckToken(tok, params)
 		}
 		if len(argv) == 0 {
 			continue
@@ -233,17 +239,18 @@ func runPostCheck(ctx context.Context, a *app, script string, params map[string]
 	return nil
 }
 
-// renderPostCheckLine 把行内 `{param}` 占位符替换为 params 值(与
-// output_path_template 同约定);缺失参数按空串处理,避免命令语义错误。
-func renderPostCheckLine(line string, params map[string]any) string {
+// renderPostCheckToken 把单个 argv token 内的 `{param}` 占位符替换为 params
+// 值(与 output_path_template 同约定);缺失参数不替换(保留字面量,避免命令
+// 语义被静默改变)。替换发生在分词之后,值中的空格不会诞生新 token。
+func renderPostCheckToken(tok string, params map[string]any) string {
 	for k, v := range params {
 		s, ok := v.(string)
 		if !ok {
 			continue
 		}
-		line = strings.ReplaceAll(line, "{"+k+"}", s)
+		tok = strings.ReplaceAll(tok, "{"+k+"}", s)
 	}
-	return line
+	return tok
 }
 
 // quoteSplit 做引号感知的 argv 分词(不经 shell):按空白切分为 argv 元素,
@@ -305,15 +312,25 @@ func containsStr(ss []string, s string) bool {
 	return false
 }
 
-// validateOutputPathResolved 是符号链接逃逸门。
+// validateOutputPathResolved 是符号链接逃逸门,同时把关目录与目标文件本身:
 //
 // validateOutputPath 只做词法前缀校验——若 outputDirs 下存在指向白名单外
 // (如 /etc/shadow 所在目录)的符号链接,词法通过但真实写入落到白名单外。
 // 本函数把目标文件的**父目录**解析为真实路径(EvalSymlinks),再校验解析
 // 结果是否仍落在某个 outputDir 的解析路径前缀内;不通过即拒绝。
 //
-// 目标文件本身可能尚未存在(apply 前),故解析父目录而非文件本身。
+// 目标文件本身可能尚未存在(apply 前),故解析父目录而非文件本身;但**已
+// 存在**时必须 Lstat 检查其本身:父目录干净不代表文件不是指向白名单外
+// 的符号链接——os.WriteFile 会跟随符号链接写入,删除时 os.Remove 也只会
+// 摘除链接而留下真实目标。故符号链接目标一律拒绝跟随。
 func validateOutputPathResolved(outputDirs []string, target string) error {
+	if fi, err := os.Lstat(target); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("目标文件 %q 本身为符号链接,拒绝跟随(防写入/删除落到白名单外)", target)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查目标文件符号链接失败: %w", err)
+	}
 	realParent, err := filepath.EvalSymlinks(filepath.Dir(target))
 	if err != nil {
 		return fmt.Errorf("解析目标目录符号链接失败: %w", err)

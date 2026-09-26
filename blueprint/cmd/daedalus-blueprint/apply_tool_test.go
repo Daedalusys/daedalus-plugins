@@ -11,7 +11,9 @@ package main
 //   - happy:render → apply 全链(token 校验 + 写文件 + post_check + reload);
 //   - 5 失败:plan 不存在 / name 不匹配 / token 错配 / token 已消费(二次 apply)
 //     / post_check 非零 rc;
-//   - 2 回滚:post_check 失败 → 旧文件恢复;reload 失败 → 新文件删除。
+//   - 2 回滚:post_check 失败 → 旧文件恢复;reload 失败 → 新文件删除;
+//   - 符号链接门:目标本身为 symlink → apply 拒绝(白名单外真实文件不被写);
+//   - post_check 分词纪律:{param} 替换在分词后,值不诞生新 argv token。
 
 import (
 	"context"
@@ -197,5 +199,69 @@ func TestApplyTool_ReloadFails_RollbackNewFile(t *testing.T) {
 	}
 	if _, err := os.Stat(a.plans.m[planID].Target); !os.IsNotExist(err) {
 		t.Errorf("回滚后应删除新文件, stat err=%v", err)
+	}
+}
+
+// TestApplyTool_TargetSymlink 目标文件本身是指向白名单外的符号链接 →
+// apply 必须拒绝(旧实现只解析父目录,os.WriteFile 会跟随链接把渲染内容
+// 写到白名单外的真实文件上)。
+func TestApplyTool_TargetSymlink(t *testing.T) {
+	a := newTestApp(t)
+	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
+	session, ctx := connectServer(t, a)
+	planID, token := seedApplyPlan(t, a, "nginx-vhost")
+
+	target := a.plans.m[planID].Target
+	outside := t.TempDir()
+	realFile := filepath.Join(outside, "escape.conf")
+	if err := os.WriteFile(realFile, []byte("ORIGINAL"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realFile, target); err != nil {
+		t.Skipf("符号链接不可用: %v", err)
+	}
+
+	res, text := callText(t, session, ctx, "blueprint_apply", map[string]any{
+		"name": "nginx-vhost", "plan_id": planID, "confirm_token": token,
+	})
+	if !res.IsError {
+		t.Errorf("符号链接目标应被拒, 得到: %s", text)
+	}
+	data, err := os.ReadFile(realFile)
+	if err != nil || string(data) != "ORIGINAL" {
+		t.Errorf("白名单外真实文件不应被写入, 得到 %q (%v)", data, err)
+	}
+}
+
+// TestRunPostCheck_ParamStaysOneToken `{param}` 替换必须发生在分词之后:
+// 含空格的参数值(乃至 `; rm` 之类 shell 片段)只能落在它所属的那一个 argv
+// token 内,不得诞生新 token(旧实现先替换后分词 = argv 注入)。
+func TestRunPostCheck_ParamStaysOneToken(t *testing.T) {
+	a := newTestApp(t)
+	var got [][]string
+	a.execCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		got = append(got, append([]string{name}, args...))
+		return nil, nil
+	}
+	err := runPostCheck(context.Background(), a, "nginx -t -c {conf}",
+		map[string]any{"conf": "a b; rm -rf /"})
+	if err != nil {
+		t.Fatalf("runPostCheck 失败: %v", err)
+	}
+	want := []string{"nginx", "-t", "-c", "a b; rm -rf /"}
+	if len(got) != 1 || strings.Join(got[0], "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+}
+
+// TestRunPostCheck_ParamCannotSwapCommand 参数值即使开头是白名单外命令,
+// 也只影响它所替换的那个 token;argv[0] 的白名单校验在替换后进行。
+func TestRunPostCheck_ParamCannotSwapCommand(t *testing.T) {
+	a := newTestApp(t)
+	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
+	err := runPostCheck(context.Background(), a, "{prog} -t",
+		map[string]any{"prog": "sudo"})
+	if err == nil || !strings.Contains(err.Error(), "白名单") {
+		t.Errorf("替换后 argv[0]=sudo 应被白名单拒绝, 得到: %v", err)
 	}
 }

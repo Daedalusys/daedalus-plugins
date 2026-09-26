@@ -13,12 +13,41 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
 )
+
+// statusGlobPattern 把 output_path_template 的文件名部分转为匹配模式:
+// `{param}` 占位符整体替换为 `*`,其余字符保留,供 filepath.Match 近似
+// 判定"本蓝图是否已安装"(v1 无参数上下文,只能按文件名模式匹配)。
+func statusGlobPattern(tmpl string) string {
+	base := filepath.Base(tmpl)
+	var b strings.Builder
+	inPlaceholder := false
+	for _, r := range base {
+		switch {
+		case r == '{':
+			inPlaceholder = true
+		case r == '}':
+			if inPlaceholder {
+				b.WriteRune('*')
+				inPlaceholder = false
+			}
+		default:
+			if !inPlaceholder {
+				b.WriteRune(r)
+			}
+		}
+	}
+	// 未闭合 `{` 时其内容被吞掉不产 `*`,模式只匹配字面残余——模板畸形时
+	// 宁可漏报,不误报。
+	return b.String()
+}
 
 type statusIn struct {
 	Name string `json:"name" jsonschema:"蓝图 id,如 nginx-vhost。"`
@@ -76,11 +105,16 @@ func statusResult(a *app, in statusIn) (*mcp.CallToolResult, string, error) {
 		return toolError(err), "denied", err
 	}
 
-	// v1 简化:无参数时无法替换 {param},故扫描 outputDirs 近似判定已安装,
-	// 命中即把 targetPath 修正为实际文件。
+	// v1 简化:无参数时无法替换 {param},故把模板文件名中的 `{...}` 占位符
+	// 转成 `*` 通配,对 outputDirs 的文件名做近似匹配,命中即把 targetPath
+	// 修正为实际文件。**只统计与模板文件名匹配的条目**——旧实现"任一目录
+	// 任一文件"会把同目录的无关配置(其他域名的 vhost、redis.acl 等)误报
+	// 为本蓝图已安装。ReadDir 按文件名有序,取稳定首个命中。
+	pattern := statusGlobPattern(cb.Blueprint.OutputPathTmpl)
 	targetPath := cb.Blueprint.OutputPathTmpl
 	installed := false
 	contentHash := ""
+scan:
 	for _, dir := range a.outputDirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -90,7 +124,11 @@ func statusResult(a *app, in statusIn) (*mcp.CallToolResult, string, error) {
 			if e.IsDir() {
 				continue
 			}
-			full := dir + "/" + e.Name()
+			ok, err := filepath.Match(pattern, e.Name())
+			if err != nil || !ok {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
 			data, err := os.ReadFile(full)
 			if err != nil {
 				continue
@@ -99,10 +137,7 @@ func statusResult(a *app, in statusIn) (*mcp.CallToolResult, string, error) {
 			sum := sha256.Sum256(data)
 			contentHash = hex.EncodeToString(sum[:])[:12]
 			targetPath = full
-			break
-		}
-		if installed {
-			break
+			break scan
 		}
 	}
 
@@ -201,10 +236,13 @@ func removeResult(ctx context.Context, a *app, in removeIn) (*mcp.CallToolResult
 		return toolError(err), "denied", err
 	}
 
-	// 仅删除 plan.Target(纵深防御已由 render/apply 校验;不再扫目录防误删)。
+	// 仅删除 plan.Target。删除与写入同险:词法前缀门之外必须走同一
+	// validateOutputPathResolved(父目录解析 + 目标本身符号链接检查)——
+	// 否则符号链接目标只会被摘链接,真实文件留在白名单外原样存活,
+	// 而审计却记着"已移除"。
 	removed := false
 	configPath := plan.Target
-	if validateOutputPath(a.outputDirs, plan.Target) {
+	if validateOutputPath(a.outputDirs, plan.Target) && validateOutputPathResolved(a.outputDirs, plan.Target) == nil {
 		if err := os.Remove(plan.Target); err == nil {
 			removed = true
 		}
