@@ -1,0 +1,27 @@
+{
+  "id": "daedalus.proc",
+  "name": "Daedalus Process Reconnaissance",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-proc",
+  "tools": [
+    "proc_list",
+    "proc_tree",
+    "proc_fds",
+    "proc_listen",
+    "proc_cgroup"
+  ],
+  "permissions": {
+    "read": [
+      "/proc"
+    ],
+    "write": [],
+    "run": []
+  }
+}
