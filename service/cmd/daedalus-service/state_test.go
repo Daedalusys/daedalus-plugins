@@ -1,4 +1,4 @@
-// 状态记忆接线测试(计划 todo 20,Happy/Failure QA 前缀 TestStateWiring):
+// 状态记忆接线测试(Happy/Failure QA 前缀 TestStateWiring):
 // 成功的 service.query / service.list 各落一条 state 条目、失败调用零落盘、
 // stateLog 报错时 best-effort(工具结果逐字节不变 + stderr 一行中文提示)。
 // systemctl 注入复用 main_test.go 的 fakeSystemctl,状态路径经
@@ -22,7 +22,7 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/state"
 )
 
-// TestMain 为全包钉死 DAEDALUS_STATE_PATH 基线:todo 20 起每次成功的
+// TestMain 为全包固定 DAEDALUS_STATE_PATH 基线:每次成功的
 // query/list 都会真实追加写 state.jsonl,若不隔离,dirs 解析链会落到
 // /var/lib/daedalus 或 $HOME/.local/share/daedalus——跑一遍测试就污染
 // 开发者真实状态记忆(测试隔离纪律)。个别测试用 t.Setenv 覆写本基线。
@@ -58,7 +58,7 @@ func readState(t *testing.T) []state.StateEntry {
 // TestStateWiring_QueryAppendsEntry Happy:成功 query sshd → 恰一条条目,
 // Kind/Name 精确,ObservedAt 为近期时刻,Payload 反序列化回 ServiceState
 // 且携带夹具真实属性(反造假:凭输入拼 {kind,name} 的桩载荷必然在此爆红)。
-// 计划 Happy QA 文字指定的读回入口 state.LatestByKind("service") 同步断言。
+// 读回入口 state.LatestByKind("service") 同步断言。
 func TestStateWiring_QueryAppendsEntry(t *testing.T) {
 	fakeSystemctl(t, happyFixtureOutput)
 	useTempState(t)
@@ -99,7 +99,7 @@ func TestStateWiring_QueryAppendsEntry(t *testing.T) {
 	}
 }
 
-// TestStateWiring_ListSingleEntryPerCall 钉死 list 语义读法:计划标题逐字
+// TestStateWiring_ListSingleEntryPerCall 固定 list 语义读法:契约逐字
 // "one state entry per successful service.query / service.list **call**"
 // ——list 一条/调用、不分单元;Name=生效过滤模式(缺省 "*"),
 // Payload 与工具回包同值的完整数组 JSON。

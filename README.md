@@ -7,8 +7,9 @@ runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
 每个插件一个子目录,内含 `daedalus.plugin.json`(manifest)+ `cmd/`(Go 源码)+
 `bin/`(构建产物,`just plugin-pack` 拷入,不入库)。各插件独立 `go.mod`
 (`module github.com/Daedalusys/daedalus-plugins/<cap>`),经
-`replace github.com/Daedalusys/daedalus-sdk => ../../daedalus-sdk` 引用 SDK;
-仓根 `go.work` 聚合 6 个模块。
+`replace github.com/Daedalusys/daedalus-sdk => ../daedalus-sdk` 引用 SDK(该路径为
+插件仓 CI 形状;本地三仓平级布局由主仓 `daedalus-core/go.work` 的 replace 覆盖)。
+仓根 `go.work` 聚合各插件模块。
 
 ## 插件索引
 

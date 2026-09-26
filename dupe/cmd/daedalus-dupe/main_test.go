@@ -1,6 +1,6 @@
 // daedalus-dupe 的行为测试:直接驱动 scanLarge / scanDupes / applyPolicy 入口,
 // 用真实临时目录演练三种查重算法、top_n 截断、min_size 过滤、pathguard 拒绝、
-// ctx 取消与策略 fail-closed;另经内存内 MCP 握手钉死 tools/list 注册形态。
+// ctx 取消与策略 fail-closed;另经内存内 MCP 握手固定 tools/list 注册形态。
 package main
 
 import (
@@ -19,8 +19,6 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/pathguard"
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
-
-// —— 基础设施:内存内 MCP 会话与临时目录 ——
 
 // connectSession 建立内存内客户端/服务器会话(镜像 fs 插件测试形态),
 // 并在测试结束校验服务器随连接关闭而优雅退出。
@@ -219,8 +217,6 @@ func decodeGroups(t *testing.T, res *mcp.CallToolResult) []dupeGroup {
 	return groups
 }
 
-// —— scan_large ——
-
 func TestScanLarge_TopN(t *testing.T) {
 	ensureDefaultAllowlist(t)
 	base := mustTempDir(t)
@@ -357,8 +353,6 @@ func TestScanLarge_CtxCancel(t *testing.T) {
 	}
 }
 
-// —— scan_dupes ——
-
 func TestScanDupes_SizeOnly(t *testing.T) {
 	ensureDefaultAllowlist(t)
 	base := mustTempDir(t)
@@ -416,7 +410,7 @@ func TestScanDupes_First1MB(t *testing.T) {
 	base := mustTempDir(t)
 
 	// dup1/dup2 共享前 1 MiB 但尾部不同:体积相同、全文不同,
-	// 只有 first_1mb 会把它们归为一组,sha256 不会(下条断言钉死)。
+	// 只有 first_1mb 会把它们归为一组,sha256 不会(下条断言固定)。
 	prefix := strings.Repeat("P", firstChunkSize)
 	dup1 := writeFileContent(t, base, "dup1.bin", prefix+"AAAA")
 	dup2 := writeFileContent(t, base, "dup2.bin", prefix+"BBBB")
@@ -559,13 +553,11 @@ func TestApplyPolicyMissing(t *testing.T) {
 	orig := slices.Clone(pathguard.AllowedDirs)
 	t.Cleanup(func() { pathguard.WithAllowedDirs(orig) })
 
-	// 1) 显式指向缺失 = 硬错误(不得静默降级)。
 	t.Setenv(policy.EnvPolicyPath, filepath.Join(t.TempDir(), "absent.toml"))
 	if err := applyPolicy(); err == nil {
 		t.Fatal("显式指向缺失策略应报错(不得静默回退)")
 	}
 
-	// 2) 显式指向 testdata 合法夹具:白名单逐字跟随(/tmp-only)。
 	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "policy.toml"))
 	if err := applyPolicy(); err != nil {
 		t.Fatalf("加载 testdata 合法策略失败: %v", err)
@@ -574,8 +566,6 @@ func TestApplyPolicyMissing(t *testing.T) {
 		t.Fatalf("allowed_dirs 未跟随夹具: %v", pathguard.AllowedDirs)
 	}
 
-	// 3) 策略整体缺失(无 env、无生产路径、远离仓库 testdata)= Default 回退,
-	//    服务器仍可启动且白名单为内置 3 目录。
 	t.Setenv(policy.EnvPolicyPath, "")
 	if _, err := os.Stat(policy.ProductionPath); err == nil {
 		t.Skip("本机存在生产策略,跳过缺失回退演练")

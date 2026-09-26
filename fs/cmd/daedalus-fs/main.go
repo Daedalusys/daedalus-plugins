@@ -1,23 +1,15 @@
 // Command daedalus-fs 是文件系统能力 MCP 服务器(stdio JSON-RPC)。
 //
-// 行为规格源:daedalus/files/system/opt/daedalus/deno/fs_server.ts(生产实现)。
-// 提供 4 个工具(read_file / write_file / list_dir / move_file),所有路径
-// 经由 internal/pathguard 白名单校验(默认 /home、/var/log、/tmp)。Go 无运行时
-// 权限标志,安全边界全部 in-code 强制。
+// 行为规格源:fs_server.ts(生产实现)。提供 4 个工具(read_file / write_file /
+// list_dir / move_file),所有路径经由 internal/pathguard 白名单校验(默认
+// /home、/var/log、/tmp);Go 无运行时权限标志,安全边界全部 in-code 强制。
+// 白名单启动时从 shared/policy.toml 读取注入:缺失回退 Default(),损坏拒启。
 //
-// 策略来源(计划 todo 12):白名单启动时从 shared/policy.toml
-// (internal/policy)读取并注入 pathguard;文件缺失回退 Default(),
-// 损坏则拒绝启动(fail-closed)。
-//
-// 清单交叉引用:本插件 manifest(daedalus.plugin.json)的 resources 声明字段
-// (本插件 v1 未声明)schema 单一事实源见
-// daedalus/core/internal/objectmodel/objectmodel.go
-// (计划 .omo/plans/aios-object-model-alignment.md 决策 25;
-// JSON 清单不能携带注释,故引用住本文件头)。
-//
-// 工具描述、参数名(path/content/src/dst)、required 列表与 ToolAnnotations
-// 与 fs_server.ts:210-299 逐字一致;错误结果对应 handleJsonRpcMessage 的
-// catch 分支(440-454 行):isError=true 且文本以 "Error: " 开头。
+// 工具描述、参数名(path/content/src/dst)、required 列表与 ToolAnnotations 与
+// fs_server.ts 逐字一致;错误结果对应其 handleJsonRpcMessage 的 catch 分支:
+// isError=true 且文本以 "Error: " 开头。manifest 的 resources 声明字段 schema
+// 单一事实源见 daedalus/core/internal/objectmodel/objectmodel.go
+// (JSON 清单不能携带注释,故引用住本文件头)。
 package main
 
 import (
@@ -40,12 +32,11 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
-// serverName 与 fs_server.ts:359 的 serverInfo.name 一致。
+// serverName 与 fs_server.ts 的 serverInfo.name 一致。
 const serverName = "daedalus-fs"
 
-// —— 工具输入类型(字段名/required 与 fs_server.ts MCP_TOOLS 的 inputSchema 一致;
-//
-//	jsonschema 标签即参数描述,对应 ts 各 property 的 description)——
+// 工具输入类型:字段名/required 与 fs_server.ts MCP_TOOLS 的 inputSchema 一致;
+// jsonschema 标签即参数描述。
 type (
 	readFileIn struct {
 		Path string `json:"path" jsonschema:"Absolute path to the file to read."`
@@ -64,7 +55,7 @@ type (
 )
 
 func main() {
-	// 单一事实源(计划 todo 12):启动时读 shared/policy.toml 并注入
+	// 单一事实源:启动时读 shared/policy.toml 并注入
 	// pathguard。文件整体缺失时 LoadOrDefault 回退 Default()(服务器
 	// 仍可启动);文件存在但损坏/字段缺失属 fail-closed → 拒绝启动。
 	if err := applyPolicy(); err != nil {
@@ -75,7 +66,7 @@ func main() {
 	server := newServer()
 
 	// SIGINT/SIGTERM 触发优雅退出;Run 返回后错误信息写 stderr,
-	// 以保持 stdout 的 JSON-RPC 数据流完整(对应 fs_server.ts:531-534)。
+	// 以保持 stdout 的 JSON-RPC 数据流完整(与 fs_server.ts 一致)。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -108,7 +99,6 @@ func isCleanShutdown(err error) bool {
 	return strings.HasPrefix(err.Error(), "server is closing")
 }
 
-// newServer 构造并注册全部 4 个工具(测试与 main 共用同一构造入口)。
 func newServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    serverName,
@@ -160,7 +150,7 @@ func newServer() *mcp.Server {
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    false,
 			DestructiveHint: &destructive,
-			IdempotentHint:  false, // ts: idempotentHint=false
+			IdempotentHint:  false,
 			OpenWorldHint:   &closedWorld,
 		},
 	}, handleMoveFile)
@@ -168,7 +158,7 @@ func newServer() *mcp.Server {
 	return server
 }
 
-// handleReadFile 移植 fs_server.ts:115-127(readFileTool)。
+// handleReadFile 移植 fs_server.ts 的 readFileTool。
 func handleReadFile(_ context.Context, _ *mcp.CallToolRequest, in readFileIn) (*mcp.CallToolResult, any, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, false)
 	if err != nil {
@@ -188,7 +178,7 @@ func handleReadFile(_ context.Context, _ *mcp.CallToolRequest, in readFileIn) (*
 	return textResult(string(data)), nil, nil
 }
 
-// handleWriteFile 移植 fs_server.ts:132-159(write_fileTool)。
+// handleWriteFile 移植 fs_server.ts 的 writeFileTool。
 func handleWriteFile(_ context.Context, _ *mcp.CallToolRequest, in writeFileIn) (*mcp.CallToolResult, any, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, true)
 	if err != nil {
@@ -197,7 +187,7 @@ func handleWriteFile(_ context.Context, _ *mcp.CallToolRequest, in writeFileIn) 
 	if info, err := os.Stat(safePath); err == nil && info.IsDir() {
 		return toolError(fmt.Errorf("Target is a directory: %s", in.Path)), nil, nil
 	}
-	// 自动创建父目录;已存在或创建失败均如 ts 一样静默(对应 151-154 行空 catch)。
+	// 自动创建父目录;已存在或创建失败均如 ts 一样静默(对应其空 catch)。
 	mkdirParent(safePath)
 	if err := os.WriteFile(safePath, []byte(in.Content), 0o644); err != nil {
 		return toolError(err), nil, nil
@@ -206,7 +196,7 @@ func handleWriteFile(_ context.Context, _ *mcp.CallToolRequest, in writeFileIn) 
 	return textResult(fmt.Sprintf("Successfully wrote %d characters to %s", utf16Length(in.Content), in.Path)), nil, nil
 }
 
-// handleListDir 移植 fs_server.ts:164-181(listDirTool):
+// handleListDir 移植 fs_server.ts 的 listDirTool:
 // 目录项名排序后以 JSON 数组(indent=2)作为文本返回(ts 的 JSON.stringify)。
 func handleListDir(_ context.Context, _ *mcp.CallToolRequest, in listDirIn) (*mcp.CallToolResult, any, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, false)
@@ -236,7 +226,7 @@ func handleListDir(_ context.Context, _ *mcp.CallToolRequest, in listDirIn) (*mc
 	return textResult(string(encoded)), nil, nil
 }
 
-// handleMoveFile 移植 fs_server.ts:186-205(moveFileTool)。
+// handleMoveFile 移植 fs_server.ts 的 moveFileTool。
 func handleMoveFile(_ context.Context, _ *mcp.CallToolRequest, in moveFileIn) (*mcp.CallToolResult, any, error) {
 	safeSrc, err := pathguard.ValidatePath(in.Src, true)
 	if err != nil {
@@ -267,14 +257,13 @@ func utf16Length(s string) int {
 	return len(utf16.Encode([]rune(s)))
 }
 
-// textResult 构造成功结果(对应 ts 431-439 行的单 text content 块)。
 func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}
 }
 
-// toolError 对应 ts handleJsonRpcMessage 的 catch 分支(440-454 行):
+// toolError 对应 ts handleJsonRpcMessage 的 catch 分支:
 // isError=true,文本为 "Error: " + 错误消息。
 func toolError(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{

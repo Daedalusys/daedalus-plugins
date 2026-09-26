@@ -4,6 +4,5 @@
 # 仅使用白名单命令 redis-cli(严格子集,与 policy.toml [blueprints].post_check_commands 一致)。
 set -eu
 
-# ping 验证 Redis 连接
 redis-cli ping >/dev/null 2>&1
 exit $?

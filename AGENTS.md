@@ -12,8 +12,10 @@ Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。6 �
 每个插件一个子目录、内含 `daedalus.plugin.json` (manifest) + `cmd/` (Go 源码) +
 `bin/` (构建产物,`just plugin-pack` 拷入,**不入库**)。各插件**独立 `go.mod`**
 (`module github.com/Daedalusys/daedalus-plugins/<cap>`),经
-`replace github.com/Daedalusys/daedalus-sdk => ../../daedalus-sdk` 引用 SDK;
-仓根 `go.work` 聚合 6 个模块。
+`replace github.com/Daedalusys/daedalus-sdk => ../daedalus-sdk` 引用 SDK —— 该路径
+是**插件仓 CI 形状**(Actions 不许 checkout 逃出 `GITHUB_WORKSPACE`,SDK 检出到
+`daedalus-plugins/daedalus-sdk`);三仓平级的本地布局下此路径不存在,由主仓
+`../daedalus-core/go.work` 的版本限定 replace 覆盖,勿改 `go.mod`。仓根 `go.work` 聚合各插件模块。
 
 ## STRUCTURE
 ```
@@ -53,7 +55,7 @@ daedalus-plugins/
 | 蓝图渲染 + 应用 | `blueprint/cmd/daedalus-blueprint/` | 调 `daedalus-sdk/blueprint` + `shellpolicy` post_check 钩子 |
 | 蓝图数据(参数化模板) | `blueprint/blueprints/<id>/` | `//go:embed` 源;主仓 `just blueprint-embed` rsync 到 `cmd/.../blueprints/` |
 | 插件 manifest schema | `*/daedalus.plugin.json` | id/type/runtime/executable/tools/resources/permissions/i18n |
-| 跨仓 SDK 引用 | 各插件 `go.mod` 的 `replace` | `=> ../../daedalus-sdk`;三仓平级 clone 时优先走 `../daedalus-core/go.work` |
+| 跨仓 SDK 引用 | 各插件 `go.mod` 的 `replace` | `=> ../daedalus-sdk`(CI 形状);本地平级布局由主仓 `go.work` 的 v0.0.0 与零伪版本两行 replace 覆盖 |
 
 ## 插件索引
 
@@ -82,11 +84,16 @@ daedalus-plugins/
 - **注释语言(强制)**: 本仓全部 `.go` / `daedalus.plugin.json` 注释字段 / `template.tmpl` / `*.sh` 注释**必须中文**。标识符 / 字符串字面量 / JSON 键 / HTTP 头保留英文。
 - **插件布局统一**: 每个 `<cap>/` = `daedalus.plugin.json` + `cmd/daedalus-<cap>/` + `bin/daedalus-<cap>` + `go.mod` + `go.sum` (+ 可选 `i18n/`,`blueprint/` 独有 `blueprints/`)。
 - **独立 go.mod**: 每插件 `module github.com/Daedalusys/daedalus-plugins/<cap>`,**不聚合到根模块**;跨插件共享代码 → 提 SDK,不要在本仓共享子包。
-- **跨仓 dev 桥**: 各插件 `go.work.example` (`use ( . ../../daedalus-sdk )`) 是单仓 clone 兜底;三仓平级 clone 时由 `../daedalus-core/go.work` 解析优先于各仓 `replace`。
+- **跨仓 dev 桥**: 各插件 `go.work.example` (`use ( . ../../daedalus-sdk )`) 是单仓 clone 兜底;三仓平级 clone 时以主仓 `../daedalus-core/go.work` 为准 — 它 `use` 全部 cap 并对 SDK 的两个 require 版本各钉一行 replace,workspace 级 replace 覆盖模块级,因此本地无需符号链接桥。
 - **不产独立 release**: 本仓只演进源码;镜像即发布物,经主仓 `just build` 出口。`bin/` 不入库,`just plugin-pack` 拷入。
 - **Blueprint 数据单一事实源**: `blueprint/blueprints/<id>/` 是唯一权威;主仓 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/` 供 `//go:embed`,**复制产物不入库**。
 - **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 4 个不写。`name="*"` 匹配所有资源。
 - **i18n**: locale 文件在 `<cap>/i18n/<locale>.json` (POSIX 下划线命名);manifest 声明 `"i18n": ["en_US", "zh_CN"]` 数组,en_US 必定位兜底。
+- **禁止注释引用计划编号**: `todo N` / `决策 N` / `oracle review` / `round-N` 等进度信息写 commit message 或 `.omo/plans/`,不进源码注释。
+- **注释只写 why,不写 what**: 代码可自解释处不加注释。
+- **单文件注释密度软上限 ~15%**: 后续可接 CI 门禁。
+- **跨仓/跨语言对齐注释不写精确行号**: `py:43-53` 这类行号会腐烂,只写行为语义。
+- **文件头 ≤8 行**: 一句 what + 关键 invariant + 指回 README/AGENTS 的链接。
 
 ## 跨仓 release 流程
 

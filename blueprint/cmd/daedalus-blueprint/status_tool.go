@@ -1,12 +1,9 @@
 package main
 
-// status_tool.go —— blueprint_status / blueprint_remove 工具(todo 20)。
+// status_tool.go —— blueprint_status / blueprint_remove 工具。
 //
-// blueprint_status:只读查询蓝图当前部署状态——目标路径存在与否、内容 sha256
-// 前 12 位、plan store 中该蓝图的活动计划数。无副作用、无子进程调用。
-//
-// blueprint_remove:经确认令牌删除已应用的蓝图配置。v1 简化:remove 不走
-// plan store,直接对 "remove:"+name 生成单次 token;删文件(存在才删)→
+// blueprint_status:只读查询部署状态(目标路径存在与否、内容 sha256 前 12 位、
+// 活动计划数),无副作用、无子进程调用。blueprint_remove:经确认令牌删配置 →
 // reload(经 a.execCmd 注入缝)→ audit → 返回 {removed, config_path}。
 
 import (
@@ -21,12 +18,10 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
 )
 
-// statusIn 是 blueprint_status 的输入。
 type statusIn struct {
 	Name string `json:"name" jsonschema:"蓝图 id,如 nginx-vhost。"`
 }
 
-// statusOut 是 blueprint_status 的输出。
 type statusOut struct {
 	Name        string `json:"name"`
 	TargetPath  string `json:"target_path"`
@@ -35,20 +30,17 @@ type statusOut struct {
 	ActivePlans int    `json:"active_plans"` // plan store 中该蓝图的活动计划数
 }
 
-// removeIn 是 blueprint_remove 的输入。
 type removeIn struct {
 	Name         string `json:"name" jsonschema:"蓝图 id,如 nginx-vhost。"`
 	PlanID       string `json:"plan_id" jsonschema:"先前 blueprint_apply 的 plan_id(该 plan 必须已应用)。"`
 	ConfirmToken string `json:"confirm_token" jsonschema:"针对 remove:<name> 的单次有效确认令牌。"`
 }
 
-// removeOut 是 blueprint_remove 的输出。
 type removeOut struct {
 	Removed    bool   `json:"removed"`
 	ConfigPath string `json:"config_path"`
 }
 
-// registerStatusTool 注册 blueprint_status(只读)。
 func registerStatusTool(server *mcp.Server, a *app) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "blueprint_status",
@@ -64,7 +56,6 @@ func registerStatusTool(server *mcp.Server, a *app) {
 	}, handleStatus(a))
 }
 
-// handleStatus 返回 statusIn handler 闭包(只读,无副作用)。
 func handleStatus(a *app) func(context.Context, *mcp.CallToolRequest, statusIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in statusIn) (*mcp.CallToolResult, any, error) {
 		cb, ok := a.reg.get(in.Name)
@@ -72,13 +63,9 @@ func handleStatus(a *app) func(context.Context, *mcp.CallToolRequest, statusIn) 
 			return toolErrorf("blueprint %q 不存在", in.Name), nil, nil
 		}
 
-		// 由 OutputPathTmpl 推导目标路径(无参数时无法替换 {param},v1 用 "*" 占位
-		// 说明"存在性按 output_dirs 下的实际文件判定";更精确的做法是遍历 outputDirs
-		// 找匹配前缀的文件——v1 简化:报告蓝图已知信息 + 计划数)。
+		// v1 简化:无参数时无法替换 {param},故扫描 outputDirs 近似判定已安装,
+		// 命中即把 targetPath 修正为实际文件。
 		targetPath := cb.Blueprint.OutputPathTmpl
-
-		// 内容哈希:查 outputDirs 下是否存在该蓝图渲染出的文件(v1 用目录扫描近似,
-		// 精确到"output_dirs 任一目录下非空文件存在"即视为已安装)。
 		installed := false
 		contentHash := ""
 		for _, dir := range a.outputDirs {
@@ -106,7 +93,6 @@ func handleStatus(a *app) func(context.Context, *mcp.CallToolRequest, statusIn) 
 			}
 		}
 
-		// 活动计划数:plan store 中 Name 匹配的计划数。
 		activePlans := a.plans.countByName(in.Name)
 		out := statusOut{
 			Name:        in.Name,
@@ -119,7 +105,6 @@ func handleStatus(a *app) func(context.Context, *mcp.CallToolRequest, statusIn) 
 	}
 }
 
-// registerRemoveTool 注册 blueprint_remove(写型:经确认令牌删除配置)。
 func registerRemoveTool(server *mcp.Server, a *app) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "blueprint_remove",
@@ -137,7 +122,6 @@ func registerRemoveTool(server *mcp.Server, a *app) {
 	}, handleRemove(a))
 }
 
-// handleRemove 返回 removeIn handler 闭包。
 func handleRemove(a *app) func(context.Context, *mcp.CallToolRequest, removeIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in removeIn) (*mcp.CallToolResult, any, error) {
 		cb, ok := a.reg.get(in.Name)
@@ -145,13 +129,9 @@ func handleRemove(a *app) func(context.Context, *mcp.CallToolRequest, removeIn) 
 			return toolErrorf("blueprint %q 不存在", in.Name), nil, nil
 		}
 
-		// F1/F2 复审修复:remove 必须关联一个**已成功 apply** 的 plan,且
-		// confirm_token 必须与 apply 时生成并存入 plan store 的 RemoveToken
-		// **逐字比对**(任意非空串不再通过)。要求:
-		//   a) 用户提供 plan_id,plan 存在且 Name 匹配;
-		//   b) plan.RemoveToken 非空(证明 apply 成功且已生成 remove 令牌);
-		//   c) 用户 confirm_token == plan.RemoveToken.Token(真实配对);
-		//   d) VerifyConfirmToken 消费该 remove 令牌(单次有效,防重放)。
+		// remove 必须关联一个**已成功 apply** 的 plan,且 confirm_token 必须与
+		// apply 时生成并存入 plan store 的 RemoveToken **逐字比对**(任意非空串不再
+		// 通过);令牌经 VerifyConfirmToken 消费(单次有效,防重放)。
 		if in.PlanID == "" {
 			return toolErrorf("remove 必须提供 plan_id(先前 blueprint_apply 的 plan)"), nil, nil
 		}
@@ -162,19 +142,18 @@ func handleRemove(a *app) func(context.Context, *mcp.CallToolRequest, removeIn) 
 		if plan.Name != in.Name {
 			return toolErrorf("plan %q 属于蓝图 %q,与入参 %q 不匹配", in.PlanID, plan.Name, in.Name), nil, nil
 		}
-		// 校验该 plan 已成功 apply(Applied 标志,由 apply 成功时置位);不再用
-		// VerifyConfirmToken 做探测——那会误消费尚未使用的 apply 令牌(F2 R1 修复)。
+		// 校验该 plan 已成功 apply(Applied 标志,由 apply 成功时置位);不用
+		// VerifyConfirmToken 做探测——那会误消费尚未使用的 apply 令牌。
 		if !plan.Applied {
 			return toolErrorf("plan %q 尚未应用(需先 blueprint_apply)", in.PlanID), nil, nil
 		}
-		// RemoveToken 必须存在(apply 成功时生成),且与用户提供的逐字一致。
+		// RemoveToken 必须存在(apply 成功时生成)。
 		if plan.RemoveToken.Token == "" {
 			return toolErrorf("plan %q 无 remove 令牌(apply 未完成或 plan 过期)", in.PlanID), nil, nil
 		}
 		if in.ConfirmToken != plan.RemoveToken.Token {
 			return toolErrorf("confirm_token 与 plan %q 的 remove 令牌不匹配", in.PlanID), nil, nil
 		}
-		// 消费 remove 令牌(单次有效,防重放)。
 		if err := blueprint.VerifyConfirmToken("remove:"+in.Name, blueprint.ConfirmToken{
 			Token:   in.ConfirmToken,
 			PlanID:  "remove:" + in.Name,
@@ -183,8 +162,7 @@ func handleRemove(a *app) func(context.Context, *mcp.CallToolRequest, removeIn) 
 			return toolError(err), nil, nil
 		}
 
-		// 定位并删除目标文件:仅删除 plan.Target(outputDirs 内,纵深防御已由
-		// render/apply 校验;此处直接以 plan.Target 为准,不再扫目录防误删)。
+		// 仅删除 plan.Target(纵深防御已由 render/apply 校验;不再扫目录防误删)。
 		removed := false
 		configPath := plan.Target
 		if validateOutputPath(a.outputDirs, plan.Target) {
@@ -196,12 +174,10 @@ func handleRemove(a *app) func(context.Context, *mcp.CallToolRequest, removeIn) 
 			return toolErrorf("蓝图 %q 目标文件不存在或不可删除", in.Name), nil, nil
 		}
 
-		// reload。
 		if err := runReload(ctx, a, cb.Blueprint.ReloadService); err != nil {
 			return toolErrorf("remove 后 reload 失败: %v", err), nil, nil
 		}
 
-		// audit。
 		writeBlueprintAudit("blueprint_remove", map[string]any{
 			"name": in.Name, "plan_id": in.PlanID, "config_path": configPath,
 		}, "ok")

@@ -78,18 +78,15 @@ func TestApplyTool_Happy(t *testing.T) {
 	if out.RemoveToken != a.plans.m[planID].RemoveToken.Token {
 		t.Errorf("remove_token %q 与 plan store 中存档 %q 不一致", out.RemoveToken, a.plans.m[planID].RemoveToken.Token)
 	}
-	// 文件确实写入。
 	data, err := os.ReadFile(out.ConfigPath)
 	if err != nil || !strings.Contains(string(data), "server_name example.com") {
 		t.Errorf("渲染内容未写入 %s(%v)", out.ConfigPath, err)
 	}
-	// plan 已从 store 取出后 token 已消费。
 	if err := blueprint.VerifyConfirmToken(planID, blueprint.ConfirmToken{Token: token, PlanID: planID}); err == nil {
 		t.Errorf("apply 后 token 应已消费")
 	}
 }
 
-// TestApplyTool_PlanNotFound plan_id 不存在即拒。
 func TestApplyTool_PlanNotFound(t *testing.T) {
 	a := newTestApp(t)
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
@@ -103,7 +100,6 @@ func TestApplyTool_PlanNotFound(t *testing.T) {
 	}
 }
 
-// TestApplyTool_NameMismatch plan 的 Name 与入参不匹配即拒。
 func TestApplyTool_NameMismatch(t *testing.T) {
 	a := newTestApp(t)
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
@@ -118,7 +114,6 @@ func TestApplyTool_NameMismatch(t *testing.T) {
 	}
 }
 
-// TestApplyTool_TokenMismatch confirm_token 错配即拒。
 func TestApplyTool_TokenMismatch(t *testing.T) {
 	a := newTestApp(t)
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
@@ -133,21 +128,18 @@ func TestApplyTool_TokenMismatch(t *testing.T) {
 	}
 }
 
-// TestApplyTool_TokenConsumed 二次 apply(token 已消费)即拒。
 func TestApplyTool_TokenConsumed(t *testing.T) {
 	a := newTestApp(t)
 	a.execCmd = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
 	session, ctx := connectServer(t, a)
 	planID, token := seedApplyPlan(t, a, "nginx-vhost")
 
-	// 第一次 apply 成功(消费 token)。
 	res1, text1 := callText(t, session, ctx, "blueprint_apply", map[string]any{
 		"name": "nginx-vhost", "plan_id": planID, "confirm_token": token,
 	})
 	if res1.IsError {
 		t.Fatalf("首次 apply 应成功: %s", text1)
 	}
-	// 第二次 apply 同 token → 已消费。
 	res2, text2 := callText(t, session, ctx, "blueprint_apply", map[string]any{
 		"name": "nginx-vhost", "plan_id": planID, "confirm_token": token,
 	})
@@ -156,11 +148,9 @@ func TestApplyTool_TokenConsumed(t *testing.T) {
 	}
 }
 
-// TestApplyTool_PostCheckFails_RollbackOldFile post_check 非零 rc → 回滚恢复旧文件。
 func TestApplyTool_PostCheckFails_RollbackOldFile(t *testing.T) {
 	a := newTestApp(t)
 	planID, token := seedApplyPlan(t, a, "nginx-vhost")
-	// 预先写旧文件内容。
 	old := "old config content"
 	if err := os.WriteFile(a.plans.m[planID].Target, []byte(old), 0o644); err != nil {
 		t.Fatalf("预写旧文件失败: %v", err)
@@ -180,14 +170,12 @@ func TestApplyTool_PostCheckFails_RollbackOldFile(t *testing.T) {
 	if !res.IsError || !strings.Contains(text, "post_check") {
 		t.Errorf("应报 post_check 失败, 得到: %s", text)
 	}
-	// 旧文件已恢复。
 	data, err := os.ReadFile(a.plans.m[planID].Target)
 	if err != nil || string(data) != old {
 		t.Errorf("回滚后应恢复旧文件, 得到: %q (%v)", data, err)
 	}
 }
 
-// TestApplyTool_ReloadFails_RollbackNewFile reload 失败 → 回滚删除新文件(无旧文件)。
 func TestApplyTool_ReloadFails_RollbackNewFile(t *testing.T) {
 	a := newTestApp(t)
 	planID, token := seedApplyPlan(t, a, "nginx-vhost")
@@ -207,7 +195,6 @@ func TestApplyTool_ReloadFails_RollbackNewFile(t *testing.T) {
 	if !res.IsError || !strings.Contains(text, "reload") {
 		t.Errorf("应报 reload 失败, 得到: %s", text)
 	}
-	// 新文件已删除(无旧文件快照)。
 	if _, err := os.Stat(a.plans.m[planID].Target); !os.IsNotExist(err) {
 		t.Errorf("回滚后应删除新文件, stat err=%v", err)
 	}

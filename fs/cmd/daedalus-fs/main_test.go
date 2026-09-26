@@ -65,7 +65,7 @@ func callToolText(t *testing.T, session *mcp.ClientSession, ctx context.Context,
 	return res, text.Text
 }
 
-// wantAnnotation 是 tools/list 注解断言的期望值(逐字对齐 fs_server.ts:224-297)。
+// wantAnnotation 是 tools/list 注解断言的期望值(逐字对齐 fs_server.ts)。
 type wantAnnotation struct {
 	name        string
 	description string
@@ -325,9 +325,9 @@ func mustTempDir(t *testing.T) string {
 	return real
 }
 
-// —— policy.toml 单一事实源接线测试(计划 todo 12)——
-// 经 DAEDALUS_POLICY_PATH 指向 testdata 后调用 applyPolicy,
-// 断言 [fs].allowed_dirs 逐字进入 pathguard 并在真实 MCP 往返中生效。
+// policy.toml 单一事实源接线测试:经 DAEDALUS_POLICY_PATH 指向 testdata 后
+// 调用 applyPolicy,断言 [fs].allowed_dirs 逐字进入 pathguard 并在真实 MCP
+// 往返中生效。
 
 // TestPolicyInjection_FollowsPolicyToml 证明策略注入端到端生效:
 // testdata 把白名单收缩为仅 /tmp 后,/tmp 放行、/var/log 与 /etc 被拒,
@@ -364,7 +364,7 @@ func TestPolicyInjection_FollowsPolicyToml(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_CorruptRefusesStartup 钉死 fail-closed:
+// TestPolicyInjection_CorruptRefusesStartup 固定 fail-closed:
 // 损坏 TOML → applyPolicy 报错(main 据此拒绝启动)。
 func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "corrupt.toml"))
@@ -373,7 +373,7 @@ func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_MissingFallsBackToDefault 钉死稳健性要求:
+// TestPolicyInjection_MissingFallsBackToDefault 固定稳健性要求:
 // 显式指向缺失 = 硬错误(不静默降级);整体缺失 = Default 回退、
 // pathguard 白名单保持现状 3 目录、applyPolicy 零错误(服务器可启动)。
 func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {

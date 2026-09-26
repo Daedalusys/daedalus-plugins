@@ -108,7 +108,7 @@ func TestShellToolsList_MatchesDenoSpec(t *testing.T) {
 	if tool.Name != "shell_exec" {
 		t.Errorf("工具名 = %q", tool.Name)
 	}
-	// 与 shell_server.ts:359-360 逐字一致。
+	// 与 shell_server.ts 逐字一致。
 	wantDesc := "Execute an allowlisted command with arguments safely (read-only / diagnostic). Restricted to an argv allowlist with strict argument path validation and 30s timeout."
 	if tool.Description != wantDesc {
 		t.Errorf("描述漂移:\n got %q\nwant %q", tool.Description, wantDesc)
@@ -145,7 +145,7 @@ func TestShellToolsList_MatchesDenoSpec(t *testing.T) {
 		t.Fatalf("properties 缺 args: %v", props)
 	}
 	// Go nil slice 被 SDK 推断为 ["null","array"] 联合类型。这是 Go 类型
-	// 反射产物而非语义漂移:ts 版对 args:null 的处理(shell_server.ts:456-458,
+	// 反射产物而非语义漂移:ts 版对 args:null 的处理(shell_server.ts,
 	// Array.isArray 失败 → [])恰好要求 schema 接受显式 null,联合类型比
 	// 字面 "array" 更贴近 ts 行为。断言集合必须含 "array" 且无其它意外成员。
 	gotTypes := schemaTypes(argsSchema["type"])
@@ -186,7 +186,7 @@ func toolArgs(command string, args []string) map[string]any {
 	return m
 }
 
-// TestShellExec_Rejections 覆盖计划要求的拒绝路径:rm/bash 命令、
+// TestShellExec_Rejections 覆盖拒绝路径:rm/bash 命令、
 // 非系统 bin 目录、受阻路径参数、覆盖式白名单。
 func TestShellExec_Rejections(t *testing.T) {
 	tests := []struct {
@@ -445,9 +445,9 @@ func TestRecordAudit_CreatesFileAndChainsHash(t *testing.T) {
 	}
 }
 
-// —— policy.toml 单一事实源接线测试(计划 todo 12)——
-// 经 DAEDALUS_POLICY_PATH 指向 testdata 后调用 applyPolicy,
-// 断言白名单/路径规则/超时逐字跟随策略文件;测试结束还原包级默认。
+// policy.toml 单一事实源接线测试:经 DAEDALUS_POLICY_PATH 指向 testdata 后
+// 调用 applyPolicy,断言白名单/路径规则/超时逐字跟随策略文件;测试结束还原
+// 包级默认。
 
 // TestPolicyInjection_FollowsPolicyToml 证明策略注入端到端生效:
 // 现状白名单里的 uname 被策略移除 → 126 拒绝;策略新增的 echo → 真实执行;
@@ -513,7 +513,7 @@ func TestPolicyInjection_AllowCommandsEnvReplacesPolicy(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_CorruptRefusesStartup 钉死 fail-closed:
+// TestPolicyInjection_CorruptRefusesStartup 固定 fail-closed:
 // 损坏 TOML → applyPolicy 报错,服务器 main 据此拒绝启动;
 // 与"文件缺失回退 Default"严格区分。
 func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
@@ -523,7 +523,7 @@ func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_MissingFallsBackToDefault 钉死稳健性要求:
+// TestPolicyInjection_MissingFallsBackToDefault 固定稳健性要求:
 // 无 policy.toml 也能启动 —— LoadOrDefault 回退 Default,
 // 注入后行为与现状硬编码常量完全一致(uname 放行、rm 拒绝)。
 func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {

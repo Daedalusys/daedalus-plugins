@@ -1,19 +1,13 @@
 // Command daedalus-dupe 是大文件与重复文件扫描能力 MCP 服务器(stdio JSON-RPC)。
 //
-// 行为规格源:daedalus-plugins issue #4(Daedalus Large & Duplicate File
-// Scanner)。对外提供 2 个只读工具:
+// 提供 2 个只读工具:scan_large(递归遍历单目录,按体积降序返回 top_n 个普通
+// 文件)与 scan_dupes(在目录集合内按 size_only / first_1mb / sha256 找重复
+// 分组,给出每组可回收空间 wasted_bytes 与是否同目录)。
 //
-//   - scan_large:递归遍历单个目录,按体积降序返回最大的 top_n 个普通文件;
-//   - scan_dupes:在给定目录集合内按 size_only / first_1mb / sha256 三种算法
-//     找出重复文件分组,并给出每组可回收空间(wasted_bytes)与是否同目录。
-//
-// 本插件与 fs 插件同属 L0 只读能力:所有路径先经 daedalus-sdk/pathguard
-// 白名单校验(默认 /home、/var/log、/tmp),不写文件、不调外部进程、
-// 不发网络请求。白名单在启动时从 shared/policy.toml(policy.LoadOrDefault)
-// 读取并注入:文件缺失回退 Default(),损坏则拒绝启动(fail-closed)。
-//
-// 长扫描通过 MCP 协议级 notifications/progress 上报进度
-// (ServerSession.NotifyProgress),不向 stdout/stderr 打印任何日志,
+// 与 fs 同属 L0 只读能力:所有路径先经 daedalus-sdk/pathguard 白名单校验
+// (默认 /home、/var/log、/tmp),不写文件、不调外部进程、不发网络请求。白名单
+// 启动时从 shared/policy.toml 读取注入:缺失回退 Default(),损坏拒启
+// (fail-closed)。长扫描经 MCP notifications/progress 上报进度,不打印日志
 // 以免污染 JSON-RPC 数据流。
 package main
 
@@ -39,7 +33,6 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
-// serverName 与 manifest(daedalus.plugin.json)的插件 id 语义一致。
 const serverName = "daedalus-dupe"
 
 // scan_dupes 支持的三种重复判定算法标识;表外取值一律报错。
@@ -49,14 +42,9 @@ const (
 	algoSHA256   = "sha256"
 )
 
-// firstChunkSize 是 first_1mb 算法参与哈希的文件头长度(1 MiB)。
-const firstChunkSize = 1 << 20
-
-// defaultTopN 是 scan_large 未显式给出 top_n 时的默认返回条数。
-const defaultTopN = 20
-
-// progressStep 是每处理多少个文件上报一次 MCP 进度。
-const progressStep = 100
+const firstChunkSize = 1 << 20 // first_1mb 参与哈希的文件头长度
+const defaultTopN = 20         // scan_large 未给 top_n 时的默认条数
+const progressStep = 100       // 每处理这么多文件上报一次 MCP 进度
 
 // MCP go-sdk v1.8.0 的 ToolAnnotations.DestructiveHint / OpenWorldHint 字段
 // 类型为 *bool,且 SDK 未导出取址助手,故按实证形态声明包级哨兵变量后取址
@@ -64,16 +52,12 @@ const progressStep = 100
 var nonDestructive = false
 var closedWorld = false
 
-// —— 工具输入类型(字段名即 MCP inputSchema 属性名;jsonschema 标签即描述)——
-
 type (
-	// ScanLargeInput 是 scan_large 的入参。
 	ScanLargeInput struct {
 		Dir     string `json:"dir" jsonschema:"Absolute path to the directory to scan."`
 		MinSize int64  `json:"min_size,omitempty" jsonschema:"Minimum file size in bytes to report. Defaults to 0 (every regular file)."`
 		TopN    int    `json:"top_n,omitempty" jsonschema:"Maximum number of entries to return, sorted by size descending. Defaults to 20."`
 	}
-	// ScanDupesInput 是 scan_dupes 的入参。
 	ScanDupesInput struct {
 		Dirs    []string `json:"dirs" jsonschema:"Absolute paths to the directories scanned for duplicate files."`
 		MinSize int64    `json:"min_size,omitempty" jsonschema:"Minimum file size in bytes to consider. Defaults to 0."`
@@ -81,9 +65,6 @@ type (
 	}
 )
 
-// —— 工具输出类型(JSON 渲染到 text content 块)——
-
-// largeEntry 是 scan_large 返回的单条大文件记录。
 type largeEntry struct {
 	Path  string `json:"path"`
 	Size  int64  `json:"size"`
@@ -91,7 +72,6 @@ type largeEntry struct {
 	Type  string `json:"type"`
 }
 
-// dupeGroup 是 scan_dupes 返回的一个重复文件分组。
 type dupeGroup struct {
 	GroupID     string   `json:"group_id"`
 	Files       []string `json:"files"`
@@ -99,7 +79,6 @@ type dupeGroup struct {
 	SameDir     bool     `json:"same_dir"`
 }
 
-// scannedFile 是遍历过程中采集到的普通文件元信息。
 type scannedFile struct {
 	path  string
 	size  int64
@@ -107,9 +86,8 @@ type scannedFile struct {
 }
 
 func main() {
-	// 单一事实源:启动时读 shared/policy.toml 并注入 pathguard。
-	// 文件整体缺失时 LoadOrDefault 回退 Default()(服务器仍可启动);
-	// 文件存在但损坏/字段缺失属 fail-closed → 拒绝启动。
+	// 单一事实源:启动时读 shared/policy.toml 并注入 pathguard。文件整体缺失时
+	// 回退 Default()(服务器仍可启动);损坏/字段缺失属 fail-closed → 拒绝启动。
 	if err := applyPolicy(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
 		os.Exit(1)
@@ -117,8 +95,8 @@ func main() {
 
 	server := newServer()
 
-	// SIGINT/SIGTERM 触发优雅退出;Run 返回后错误信息写 stderr,
-	// 以保持 stdout 的 JSON-RPC 数据流完整。
+	// SIGINT/SIGTERM 触发优雅退出;Run 返回后错误信息写 stderr,保持 stdout
+	// 的 JSON-RPC 数据流完整。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -129,8 +107,8 @@ func main() {
 }
 
 // applyPolicy 加载策略(缺失回退 Default)并把 [fs].allowed_dirs 注入
-// pathguard 包级白名单。与测试共用同一入口:测试经 DAEDALUS_POLICY_PATH
-// 环境变量指向 testdata 后调用本函数即可演练白名单跟随。
+// pathguard 包级白名单。与测试共用同一入口:测试经 DAEDALUS_POLICY_PATH 指向
+// testdata 后调用本函数即可演练白名单跟随。
 func applyPolicy() error {
 	p, err := policy.LoadOrDefault()
 	if err != nil {
@@ -150,7 +128,6 @@ func isCleanShutdown(err error) bool {
 	return strings.HasPrefix(err.Error(), "server is closing")
 }
 
-// newServer 构造并注册全部 2 个只读工具(测试与 main 共用同一构造入口)。
 func newServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    serverName,
@@ -182,10 +159,8 @@ func newServer() *mcp.Server {
 	return server
 }
 
-// scanLarge 遍历 in.Dir,按体积降序返回最大的 top_n 个普通文件。
-//
-// 目录符号链接一律不跟随(防白名单逃逸与目录环);单层目录读取失败跳过
-// 而不中断整体扫描。取消信号经 ctx 贯穿遍历与排序后的每个阶段。
+// scanLarge 遍历 in.Dir,按体积降序返回最大的 top_n 个普通文件。目录符号链接
+// 一律不跟随(防白名单逃逸与目录环);单层目录读取失败跳过而不中断整体扫描。
 func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput) (*mcp.CallToolResult, any, error) {
 	safeDir, err := pathguard.ValidatePath(in.Dir, false)
 	if err != nil {
@@ -234,18 +209,14 @@ func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput)
 	return textResult(string(encoded)), nil, nil
 }
 
-// scanDupes 在 in.Dirs 目录集合内按 in.Algo 找出重复文件分组。
-//
-// 算法语义:
-//   - size_only:仅按文件体积分桶,桶内 >= 2 个文件即成组(最快、可能误报);
+// scanDupes 在 in.Dirs 目录集合内按 in.Algo 找出重复文件分组。算法语义:
+//   - size_only:仅按文件体积分桶,桶内 >= 2 个即成组(最快、可能误报);
 //   - first_1mb:按文件头 1 MiB 的 SHA-256 分组(适合大文件快速预筛);
-//   - sha256:按整文件 SHA-256 分组(最准、需要完整读取)。
-//
-// 每个目录先过 pathguard;同名的同一路径跨目录去重,防止重复计数。
+//   - sha256:按整文件 SHA-256 分组(最准、需要完整读取);
+//   - 每个目录先过 pathguard;同一路径跨目录去重,防止重复计数。
 func scanDupes(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput) (*mcp.CallToolResult, any, error) {
 	switch in.Algo {
 	case algoSizeOnly, algoFirst1MB, algoSHA256:
-		// 三种受支持算法,继续。
 	default:
 		return toolError(fmt.Errorf("unknown algo %q (supported: size_only|first_1mb|sha256)", in.Algo)), nil, nil
 	}
@@ -309,8 +280,7 @@ func scanDupes(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput)
 // 的隐式行为),把 size >= minSize 的普通文件交给 emit:
 //   - 符号链接(含指向目录的链接)一律跳过,既防白名单逃逸也防目录环;
 //   - 目录不可读、条目 Lstat 失败等局部错误跳过,不中断整体扫描;
-//   - 每轮迭代检查 ctx 取消,长扫描可被随时打断;
-//   - 每处理 progressStep 个文件回调一次 progress(可为 nil)。
+//   - 每轮迭代检查 ctx 取消;每 progressStep 个文件回调一次 progress(可为 nil)。
 func walkFiles(ctx context.Context, root string, minSize int64, emit func(*scannedFile), progress func(int)) error {
 	stack := []string{root}
 	scanned := 0
@@ -358,9 +328,8 @@ func walkFiles(ctx context.Context, root string, minSize int64, emit func(*scann
 	return nil
 }
 
-// groupDuplicates 按 algo 对采集到的文件分组,仅保留 >= 2 个成员的分组。
-// 读取失败(权限/文件消失)的单个文件跳过而不中断整体扫描;
-// 分组按 wasted_bytes 降序、group_id 升序输出,保证结果稳定可比。
+// groupDuplicates 按 algo 分组,仅保留 >= 2 个成员的分组;读取失败的单个文件
+// 跳过而不中断整体扫描。分组按 wasted_bytes 降序、group_id 升序输出。
 func groupDuplicates(ctx context.Context, files []scannedFile, algo string, progress func(int)) ([]dupeGroup, error) {
 	buckets := make(map[string][]scannedFile)
 	for i, f := range files {
@@ -433,8 +402,8 @@ func groupKey(ctx context.Context, f scannedFile, algo string) (string, error) {
 	}
 }
 
-// digestFile 以流式方式计算文件摘要:first_1mb 只读前 1 MiB,
-// sha256 读完整文件。每次读循环都检查 ctx 取消,避免大文件卡住退出。
+// digestFile 流式计算文件摘要:first_1mb 只读前 1 MiB,sha256 读完整文件;
+// 每次读循环都检查 ctx 取消,避免大文件卡住退出。
 func digestFile(ctx context.Context, path, algo string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -491,7 +460,6 @@ func wastedBytes(bucket []scannedFile) int64 {
 	return total - largest
 }
 
-// sameDir 判定组内文件是否全部位于同一目录(排序后的路径列表)。
 func sameDir(paths []string) bool {
 	if len(paths) == 0 {
 		return false
@@ -505,9 +473,8 @@ func sameDir(paths []string) bool {
 	return true
 }
 
-// reportProgress 经 MCP 协议级 notifications/progress 上报已扫描文件数。
-// req / req.Session 为 nil(直接单测调用)时静默跳过;
-// ProgressNotificationParams.Progress 是 float64,需显式转换。
+// reportProgress 经 MCP 协议级 notifications/progress 上报已扫描文件数;
+// req / req.Session 为 nil(直接单测调用)时静默跳过。
 func reportProgress(ctx context.Context, req *mcp.CallToolRequest, scanned int) {
 	if req == nil || req.Session == nil {
 		return
@@ -518,15 +485,13 @@ func reportProgress(ctx context.Context, req *mcp.CallToolRequest, scanned int) 
 	})
 }
 
-// textResult 构造成功结果(单个 text content 块)。
 func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}
 }
 
-// toolError 构造错误结果:isError=true,文本为 "Error: " + 错误消息,
-// 与 fs 插件的错误形态保持一致。
+// toolError 构造错误结果:isError=true,文本为 "Error: " + 错误消息(与 fs 一致)。
 func toolError(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: "Error: " + err.Error()}},

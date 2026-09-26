@@ -1,16 +1,10 @@
 ---
-# daedalus-plugins 仓 CI(拆仓后本文件即 plugins 仓的 .github/workflows/test.yml)。
+# daedalus-plugins 仓 CI:6 个 sub-module 独立 `go build` + `go test` + i18n
+# 同步校验。跨仓 release 流程见 AGENTS.md「跨仓 release 流程」段。
 #
-# 职责:6 个 sub-module(fs/shell/pkg/sysinfo/service/blueprint)独立
-# `go build -trimpath -o bin/ ./cmd/...` + `go test ./...` + i18n 同步校验。
-#
-# 布局约定(post-split 3 仓平级 clone):
-#   - 本 workflow 的 checkout root = plugins 仓根(主仓留在 workspace 根,
-#     path 缺省,含 fs/ shell/ pkg/ sysinfo/ service/ blueprint/ 6 个 sub-module)。
-#   - daedalus-sdk 必须检出到 workspace 子目录 daedalus-sdk(GH Actions 不允许
-#     checkout 逃出 GITHUB_WORKSPACE,旧 ../daedalus-sdk 写法必失败);go build
-#     从 daedalus-plugins/<cap>/ 跑时,各 sub-module go.mod 的
-#     `replace ... => ../daedalus-sdk` 恰好解析到该 SDK 检出目录。
+# 布局约定:daedalus-sdk 必须检出到 workspace 子目录 daedalus-sdk(GH Actions
+# 不允许 checkout 逃出 GITHUB_WORKSPACE);go build 从 <cap>/ 跑时,各
+# sub-module go.mod 的 `replace ... => ../daedalus-sdk` 恰好解析到该目录。
 name: Plugins Test
 on:
   pull_request:
@@ -42,10 +36,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checkout daedalus-sdk (sibling)
-        # SDK 检出到 workspace 子目录 daedalus-sdk(GH Actions 不允许 checkout
-        # 逃出 GITHUB_WORKSPACE,旧 ../daedalus-sdk 写法必失败)。各 sub-module
-        # go.mod 的 `replace github.com/Daedalusys/daedalus-sdk => ../daedalus-sdk`
-        # 从 daedalus-plugins/<cap>/ 出发解析到该目录。
         uses: actions/checkout@v4
         with:
           repository: Daedalusys/daedalus-sdk
@@ -58,11 +48,9 @@ jobs:
           go-version: '1.25.x'
 
       - name: Materialize blueprint embed data (//go:embed 源)
-        # blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed all:blueprints/*
-        # 的目标目录,但它是 gitignored 构建产物(正常由 core 仓 `just blueprint-embed`
-        # 生成),CI 全新 checkout 里没有 → go build 报 "no matching files found"。
-        # 照抄 blueprint-embed 配方:从唯一事实源 blueprint/blueprints/(已入库)
-        # rsync 出嵌入目录(复制产物仍不入库,与 core justfile 行为一致)。
+        # blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed 的目标目录,
+        # 但它是 gitignored 构建产物,CI 全新 checkout 里没有 → go build 报
+        # "no matching files found";故从事实源 blueprint/blueprints/ rsync 出来。
         shell: bash
         run: |
           mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
@@ -70,8 +58,7 @@ jobs:
 
       - name: Build & Test 6 sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
-        # 必须逐模块跑)。go build 产物落 <cap>/bin/(manifest executable 指向
-        # bin/daedalus-<cap>);go test 含各插件单测。
+        # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
         run: |
           for cap in fs shell pkg sysinfo service blueprint dupe; do
