@@ -23,11 +23,59 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/pkgquery"
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
 const serverName = "daedalus-pkg"
+
+// recordAudit 追加一条哈希链审计条目(只读工具,尽力而为)。本插件未接入
+// policy.toml,故不传 LogPath,由 LogAudit 回退 DefaultLogPath()
+// (DAEDALUS_AUDIT_LOG_PATH 环境变量 > /var/log/daedalus/audit.jsonl),
+// 与 daedalus-shell 的解析链一致。失败只留一行 stderr 警告。
+func recordAudit(tool, outcome string, args map[string]any, cause error) {
+	if cause != nil {
+		args["error"] = shortErrText(cause)
+	}
+	var v *audit.Value
+	data, err := json.Marshal(args)
+	if err == nil {
+		v, err = audit.ParseValue(string(data))
+	}
+	if err == nil {
+		_, err = audit.LogAudit(audit.Entry{
+			Identity: serverName,
+			Tool:     tool,
+			Args:     v,
+			Outcome:  outcome,
+		})
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: 审计写入失败: %v\n", serverName, err)
+	}
+}
+
+// classifyPkgError 区分 denied 与 error:pkgquery 对包名/模式的两条校验文案
+// 属验证拒绝,其余(rpm/dnf 无法启动等)属处理器内部故障。文案为 SDK 固定串。
+func classifyPkgError(err error) string {
+	msg := err.Error()
+	if strings.HasPrefix(msg, "Package name/pattern cannot be empty.") ||
+		strings.HasPrefix(msg, "Invalid package name or pattern:") {
+		return "denied"
+	}
+	return "error"
+}
+
+// shortErrText 截取错误消息,防超长命令输出灌进哈希载荷。
+func shortErrText(err error) string {
+	const maxRunes = 200
+	r := []rune(err.Error())
+	if len(r) > maxRunes {
+		return string(r[:maxRunes]) + "…"
+	}
+	return string(r)
+}
 
 // dnfQueryIn 对应 py 的 dnf_query(name: str)(必填)。
 type dnfQueryIn struct {
@@ -97,8 +145,10 @@ func newServer(svc *pkgquery.Service) *mcp.Server {
 		out, err := svc.DnfQuery(ctx, in.Name)
 		if err != nil {
 			// 校验失败对应 py 的 ValueError;FastMCP 把未捕获异常转为 isError 结果。
+			recordAudit("dnf_query", classifyPkgError(err), map[string]any{"name": in.Name}, err)
 			return raisedError("dnf_query", err), nil, nil
 		}
+		recordAudit("dnf_query", "success", map[string]any{"name": in.Name}, nil)
 		// py 版返回 str → FastMCP 原样作为文本内容(不做 JSON 包装)。
 		return textResult(out), nil, nil
 	})
@@ -122,10 +172,13 @@ func newServer(svc *pkgquery.Service) *mcp.Server {
 		if in.Pattern != nil {
 			pattern = *in.Pattern
 		}
+		args := map[string]any{"pattern": pattern}
 		lines, err := svc.DnfListInstalled(ctx, pattern)
 		if err != nil {
+			recordAudit("dnf_list_installed", classifyPkgError(err), args, err)
 			return raisedError("dnf_list_installed", err), nil, nil
 		}
+		recordAudit("dnf_list_installed", "success", args, nil)
 		// py 版返回 list[str] → FastMCP 以 JSON 文本(indent=2)呈现。
 		return jsonResult(lines), nil, nil
 	})

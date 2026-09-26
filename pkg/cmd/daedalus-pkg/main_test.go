@@ -7,6 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,8 +17,23 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/pkgquery"
 )
+
+// TestMain 把审计链指向临时文件:测试直接驱动工具处理器,不指定落点会
+// 尝试写默认 /var/log 并产生无关警告噪声。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-pkg-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // fakeStep/scriptedRunner 提供与 internal 包测试同型的脚本化命令替身。
 type fakeStep struct {

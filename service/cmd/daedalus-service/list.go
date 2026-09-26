@@ -30,7 +30,19 @@ type serviceListIn struct {
 // (systemctl 默认即列全部)。
 const listFilterAll = "*"
 
+// handleServiceList 是 service.list 的审计入口:filter 校验拒绝 denied,
+// systemctl 故障 error,其余 success。args 仅在客户端显式提供 filter 时记录。
 func handleServiceList(ctx context.Context, _ *mcp.CallToolRequest, in serviceListIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := serviceListResult(ctx, in)
+	args := map[string]any{}
+	if in.Filter != nil {
+		args["filter"] = *in.Filter
+	}
+	recordAudit("service.list", outcome, args, cause)
+	return res, nil, nil
+}
+
+func serviceListResult(ctx context.Context, in serviceListIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "service.list"
 
 	filter := listFilterAll
@@ -38,17 +50,17 @@ func handleServiceList(ctx context.Context, _ *mcp.CallToolRequest, in serviceLi
 		filter = *in.Filter
 	}
 	if err := validateListFilter(filter); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	states, err := runSystemctlList(ctx, filter)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	// 每次成功的 service.list 调用写**一条**条目(不分单元):Name=生效过滤模式
 	// (缺省即 "*"),载荷=回包同一份 []ServiceState 数组 JSON。best-effort,
 	// 写失败只落 stderr,不改工具返回值。
 	recordServiceState(filter, states)
-	return jsonResult(states), nil, nil
+	return jsonResult(states), "success", nil
 }
 
 // validateListFilter 校验列表过滤模式。放行:字面 "*"(语义为不过滤)或匹配

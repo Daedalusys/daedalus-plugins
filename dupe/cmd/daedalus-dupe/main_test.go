@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,9 +17,24 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/pathguard"
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
+
+// TestMain 把审计链指向临时文件,避免测试期直接驱动 handler 时
+// 向默认 /var/log 落点写出警告噪声,保证测试自洽。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-dupe-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // connectSession 建立内存内客户端/服务器会话(镜像 fs 插件测试形态),
 // 并在测试结束校验服务器随连接关闭而优雅退出。

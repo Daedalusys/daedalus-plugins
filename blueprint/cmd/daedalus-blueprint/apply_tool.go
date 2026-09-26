@@ -346,5 +346,6 @@ func writeBlueprintAudit(tool string, args map[string]any, outcome string) {
 		Tool:     tool,
 		Args:     v,
 		Outcome:  outcome,
+		LogPath:  resolveAuditPath(),
 	})
 }

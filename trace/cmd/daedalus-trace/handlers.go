@@ -122,37 +122,59 @@ func resolveBounds(since, until *string, cursor *int64, limit *int) (viewFilter,
 }
 
 func handleTraceSession(ctx context.Context, _ *mcp.CallToolRequest, in traceSessionIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := traceSessionResult(ctx, in)
+	args := map[string]any{"session_id": in.SessionID}
+	putOpt(args, "since", in.Since)
+	putOpt(args, "until", in.Until)
+	putOpt(args, "cursor", in.Cursor)
+	putOpt(args, "limit", in.Limit)
+	recordAudit("trace_session", outcome, args, cause)
+	return res, nil, nil
+}
+
+func traceSessionResult(_ context.Context, in traceSessionIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "trace_session"
 	if err := validateViewID("session_id", in.SessionID); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	f, cursor, limit, err := resolveBounds(in.Since, in.Until, in.Cursor, in.Limit)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	f.sessionID = in.SessionID
 	logPath, out, err := scanOrErr(f, cursor, limit)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
-	return jsonResult(sessionView{LogPath: logPath, SessionID: in.SessionID, scanOutcome: *out}), nil, nil
+	return jsonResult(sessionView{LogPath: logPath, SessionID: in.SessionID, scanOutcome: *out}), "success", nil
 }
 
 func handleTraceTool(ctx context.Context, _ *mcp.CallToolRequest, in traceToolIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := traceToolResult(ctx, in)
+	args := map[string]any{"tool_name": in.ToolName}
+	putOpt(args, "since", in.Since)
+	putOpt(args, "until", in.Until)
+	putOpt(args, "cursor", in.Cursor)
+	putOpt(args, "limit", in.Limit)
+	recordAudit("trace_tool", outcome, args, cause)
+	return res, nil, nil
+}
+
+func traceToolResult(_ context.Context, in traceToolIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "trace_tool"
 	if err := validateViewID("tool_name", in.ToolName); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	f, cursor, limit, err := resolveBounds(in.Since, in.Until, in.Cursor, in.Limit)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	f.toolName = in.ToolName
 	logPath, out, err := scanOrErr(f, cursor, limit)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
-	return jsonResult(toolView{LogPath: logPath, ToolName: in.ToolName, scanOutcome: *out}), nil, nil
+	return jsonResult(toolView{LogPath: logPath, ToolName: in.ToolName, scanOutcome: *out}), "success", nil
 }
 
 // handleTraceTx 单事务完整回放:不设分页(回放语义即"全部 step"),
@@ -160,20 +182,27 @@ func handleTraceTool(ctx context.Context, _ *mcp.CallToolRequest, in traceToolIn
 // ChainValid 是同事务相邻条目 tx_prev_hash == 前一条 entry_hash 的链
 // 连续性目测(创世条目的 tx_prev_hash 指向全局链,无法在本视图内验证)。
 func handleTraceTx(ctx context.Context, _ *mcp.CallToolRequest, in traceTxIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := traceTxResult(ctx, in)
+	recordAudit("trace_tx", outcome, map[string]any{"tx_id": in.TxID}, cause)
+	return res, nil, nil
+}
+
+func traceTxResult(_ context.Context, in traceTxIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "trace_tx"
 	if err := validateViewID("tx_id", in.TxID); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	logPath, err := resolveAuditLog()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	out, err := scanAuditLog(logPath, 0, viewFilter{txID: in.TxID}, math.MaxInt)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	if out.MatchedTotal == 0 {
-		return raisedError(toolName, fmt.Errorf("tx %s 未找到", in.TxID)), nil, nil
+		cause := fmt.Errorf("tx %s 未找到", in.TxID)
+		return raisedError(toolName, cause), "error", cause
 	}
 	chainValid := true
 	for i := 1; i < len(out.Entries); i++ {
@@ -185,36 +214,46 @@ func handleTraceTx(ctx context.Context, _ *mcp.CallToolRequest, in traceTxIn) (*
 	return jsonResult(txView{
 		LogPath: logPath, TxID: in.TxID, StepCount: out.MatchedTotal,
 		Genesis: out.Entries[0].TxPrevHash, ChainValid: chainValid, Entries: out.Entries,
-	}), nil, nil
+	}), "success", nil
 }
 
 func handleTraceSummary(ctx context.Context, _ *mcp.CallToolRequest, in traceSummaryIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := traceSummaryResult(ctx, in)
+	args := map[string]any{}
+	putOpt(args, "since", in.Since)
+	putOpt(args, "until", in.Until)
+	recordAudit("trace_summary", outcome, args, cause)
+	return res, nil, nil
+}
+
+func traceSummaryResult(_ context.Context, in traceSummaryIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "trace_summary"
 	var f viewFilter
 	if in.Since != nil {
 		var err error
 		if f.since, err = parseTimeBound("since", *in.Since); err != nil {
-			return raisedError(toolName, err), nil, nil
+			return raisedError(toolName, err), "denied", err
 		}
 	}
 	if in.Until != nil {
 		var err error
 		if f.until, err = parseTimeBound("until", *in.Until); err != nil {
-			return raisedError(toolName, err), nil, nil
+			return raisedError(toolName, err), "denied", err
 		}
 	}
 	if !f.since.IsZero() && !f.until.IsZero() && f.until.Before(f.since) {
-		return raisedError(toolName, fmt.Errorf("until 早于 since")), nil, nil
+		cause := fmt.Errorf("until 早于 since")
+		return raisedError(toolName, cause), "denied", cause
 	}
 	logPath, err := resolveAuditLog()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	view, err := summarizeAuditLog(logPath, f)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
-	return jsonResult(view), nil, nil
+	return jsonResult(view), "success", nil
 }
 
 // scanOrErr 解析路径 + 执行扫描的公共两步串联。

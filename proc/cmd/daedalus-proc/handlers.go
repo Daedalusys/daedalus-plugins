@@ -101,115 +101,162 @@ func validateFilter(s string) error {
 	return nil
 }
 
+// handleProcList 审计口径:filter 校验拒绝 denied,resolveProcRoot/扫描故障
+// error,其余 success;args 仅在客户端提供 filter 时记录。
 func handleProcList(ctx context.Context, _ *mcp.CallToolRequest, in procListIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := procListResult(ctx, in)
+	args := map[string]any{}
+	putOpt(args, "filter", in.Filter)
+	recordAudit("proc_list", outcome, args, cause)
+	return res, nil, nil
+}
+
+func procListResult(_ context.Context, in procListIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "proc_list"
 	filter := ""
 	if in.Filter != nil {
 		if err := validateFilter(*in.Filter); err != nil {
-			return raisedError(toolName, err), nil, nil
+			return raisedError(toolName, err), "denied", err
 		}
 		filter = *in.Filter
 	}
 	root, err := resolveProcRoot()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	procs, skipped, err := scanProcList(root, filter)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	return jsonResult(procListView{ProcRoot: root, Filter: filter,
-		Processes: procs, Total: len(procs), Skipped: skipped}), nil, nil
+		Processes: procs, Total: len(procs), Skipped: skipped}), "success", nil
 }
 
 func handleProcTree(ctx context.Context, _ *mcp.CallToolRequest, in procTreeIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := procTreeResult(ctx, in)
+	args := map[string]any{}
+	putOpt(args, "root_pid", in.RootPID)
+	recordAudit("proc_tree", outcome, args, cause)
+	return res, nil, nil
+}
+
+func procTreeResult(_ context.Context, in procTreeIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "proc_tree"
 	rootPID := defaultTreeRoot
 	if in.RootPID != nil {
 		if err := validatePID(*in.RootPID); err != nil {
-			return raisedError(toolName, err), nil, nil
+			return raisedError(toolName, err), "denied", err
 		}
 		rootPID = *in.RootPID
 	}
 	root, err := resolveProcRoot()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	tree, total, err := buildProcTree(root, rootPID)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	return jsonResult(procTreeView{ProcRoot: root, RootPID: rootPID,
-		Tree: tree, TotalProcesses: total}), nil, nil
+		Tree: tree, TotalProcesses: total}), "success", nil
 }
 
 func handleProcFds(ctx context.Context, _ *mcp.CallToolRequest, in procFdsIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := procFdsResult(ctx, in)
+	args := map[string]any{"pid": in.PID}
+	if in.Kinds != nil {
+		args["kinds"] = in.Kinds
+	}
+	recordAudit("proc_fds", outcome, args, cause)
+	return res, nil, nil
+}
+
+func procFdsResult(_ context.Context, in procFdsIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "proc_fds"
 	if err := validatePID(in.PID); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	for _, k := range in.Kinds {
 		switch k {
 		case "file", "socket", "pipe", "other":
 		default:
-			return raisedError(toolName, fmt.Errorf("proc: kinds 仅接受 file/socket/pipe/other: %q", k)), nil, nil
+			e := fmt.Errorf("proc: kinds 仅接受 file/socket/pipe/other: %q", k)
+			return raisedError(toolName, e), "denied", e
 		}
 	}
 	root, err := resolveProcRoot()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	entries, unreadable, err := scanProcFDs(root, in.PID, in.Kinds)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	return jsonResult(procFdsView{ProcRoot: root, PID: in.PID, Kinds: in.Kinds,
-		Entries: entries, Total: len(entries), Unreadable: unreadable}), nil, nil
+		Entries: entries, Total: len(entries), Unreadable: unreadable}), "success", nil
 }
 
 func handleProcListen(ctx context.Context, _ *mcp.CallToolRequest, in procListenIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := procListenResult(ctx, in)
+	args := map[string]any{}
+	putOpt(args, "port", in.Port)
+	putOpt(args, "proto", in.Proto)
+	recordAudit("proc_listen", outcome, args, cause)
+	return res, nil, nil
+}
+
+func procListenResult(_ context.Context, in procListenIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "proc_listen"
 	proto := "tcp"
 	if in.Proto != nil {
 		if *in.Proto != "tcp" && *in.Proto != "udp" {
-			return raisedError(toolName, fmt.Errorf("proc: proto 仅接受 tcp/udp: %q", *in.Proto)), nil, nil
+			e := fmt.Errorf("proc: proto 仅接受 tcp/udp: %q", *in.Proto)
+			return raisedError(toolName, e), "denied", e
 		}
 		proto = *in.Proto
 	}
 	port := 0
 	if in.Port != nil {
 		if *in.Port < 1 || *in.Port > 65535 {
-			return raisedError(toolName, fmt.Errorf("proc: port 须在 [1, 65535]: %d", *in.Port)), nil, nil
+			e := fmt.Errorf("proc: port 须在 [1, 65535]: %d", *in.Port)
+			return raisedError(toolName, e), "denied", e
 		}
 		port = *in.Port
 	}
 	root, err := resolveProcRoot()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	res, err := resolveListen(root, proto, port)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	return jsonResult(procListenView{ProcRoot: root, Proto: proto,
-		Port: port, listenResult: *res}), nil, nil
+		Port: port, listenResult: *res}), "success", nil
 }
 
 func handleProcCgroup(ctx context.Context, _ *mcp.CallToolRequest, in procCgroupIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := procCgroupResult(ctx, in)
+	recordAudit("proc_cgroup", outcome, map[string]any{"pid": in.PID}, cause)
+	return res, nil, nil
+}
+
+func procCgroupResult(_ context.Context, in procCgroupIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "proc_cgroup"
 	if err := validatePID(in.PID); err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	root, err := resolveProcRoot()
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	path := filepath.Join(root, strconv.Itoa(in.PID), "cgroup")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return raisedError(toolName, fmt.Errorf("proc: 读取 %s 失败: %w", path, err)), nil, nil
+		e := fmt.Errorf("proc: 读取 %s 失败: %w", path, err)
+		return raisedError(toolName, e), "error", e
 	}
 	paths, unit := parseCgroup(string(data))
 	return jsonResult(procCgroupView{ProcRoot: root, PID: in.PID,
-		Unit: unit, Cgroups: paths}), nil, nil
+		Unit: unit, Cgroups: paths}), "success", nil
 }

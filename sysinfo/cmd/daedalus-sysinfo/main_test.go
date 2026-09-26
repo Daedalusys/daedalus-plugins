@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,8 +18,23 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/sysinfo"
 )
+
+// TestMain 把审计链指向临时文件,避免测试期工具调用尝试写默认 /var/log
+// 落点产生无关警告噪声。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-sysinfo-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // fakeExec 脚本化命令替身(耗尽后重复最后一步)。
 type fakeExec struct {
