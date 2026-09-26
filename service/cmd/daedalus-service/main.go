@@ -1,7 +1,8 @@
 // Command daedalus-service 是 Service 观测能力 MCP 服务器(stdio JSON-RPC,只读)。
 //
-// 类型化 systemd 单元观测(属性查询 + 服务列表),返回 objectmodel.ServiceState
-// 载荷;service.list 的处理器与解析住在同包 list.go。载荷 schema 单一事实源在
+// 类型化 systemd 单元观测(属性查询 + 服务列表,返回 objectmodel.ServiceState
+// 载荷)+ systemd 全景视图三工具(systemd.go:失败单元/timer 时刻/依赖图);
+// service.list 的处理器与解析住在同包 list.go。载荷 schema 单一事实源在
 // daedalus-sdk/objectmodel/envelope.go 与 objectmodel.go(JSON 清单不能携带注释)。
 //
 // 安全边界:单元名/过滤模式先经白名单正则 + 遍历检查(argv 构造前拒绝),再经
@@ -131,6 +132,10 @@ func newServer() *mcp.Server {
 		},
 		Annotations: annotations,
 	}, handleServiceList)
+
+	// systemd 全景视图三工具(systemd_failed/timer_next/dependencies)注册
+	// 面住在 systemd.go,本文件只留一行挂载点(250 纯 LOC 纪律)。
+	registerSystemdTools(server, annotations)
 
 	return server
 }
