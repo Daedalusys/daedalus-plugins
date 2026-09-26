@@ -12,7 +12,10 @@
   "executable": "bin/daedalus-service",
   "tools": [
     "service.query",
-    "service.list"
+    "service.list",
+    "systemd_failed",
+    "systemd_timer_next",
+    "systemd_dependencies"
   ],
   "resources": [
     {

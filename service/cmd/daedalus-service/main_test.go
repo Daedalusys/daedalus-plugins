@@ -1,7 +1,8 @@
-// daedalus-service 行为测试:骨架层(serverName / isCleanShutdown / 握手
-// 两工具)+ service.query 工具层 + 共享夹具机制
-// (fakeSystemctl / connectSession / findTool)。service.list 测试因 250 纯
-// LOC 上限分居 main_list_test.go。systemctl 一律经包级 systemctlBinary 注入
+// daedalus-service 行为测试:骨架层(serverName / isCleanShutdown)+
+// service.query 工具层 + 共享夹具机制
+// (fakeSystemctl / connectSession / findTool)。service.list 与握手冒烟/
+// systemd 全景测试因 250 纯 LOC 上限分居 main_list_test.go 与
+// systemd_test.go。systemctl 一律经包级 systemctlBinary 注入
 // t.TempDir() 下的 shell 夹具(输出固定夹具表),绝不触碰宿主真实 systemd
 // ——测试确定性 + 隔离性双重保证。
 package main
@@ -54,27 +55,6 @@ func TestIsCleanShutdown(t *testing.T) {
 
 // fmtWrap 以 %w 包装错误,验证 errors.Is 穿透而非直接相等匹配。
 func fmtWrap(err error) error { return fmt.Errorf("mcp: %w", err) }
-
-// TestNewServer_HandshakeTwoTools 冒烟:服务器标识常量逐字固定,且恰有 2 个
-// 工具 service.query + service.list(集合恒等断言,多注册/漏注册都在此爆红)。
-func TestNewServer_HandshakeTwoTools(t *testing.T) {
-	if serverName != "daedalus-service" {
-		t.Errorf("serverName = %q, want %q", serverName, "daedalus-service")
-	}
-	session, ctx := connectSession(t)
-	res, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatalf("tools/list 失败: %v", err)
-	}
-	if len(res.Tools) != 2 {
-		t.Fatalf("工具数 = %d, want 2", len(res.Tools))
-	}
-	names := []string{res.Tools[0].Name, res.Tools[1].Name}
-	slices.Sort(names)
-	if names[0] != "service.list" || names[1] != "service.query" {
-		t.Errorf("工具集 = %v, want {service.list, service.query}", names)
-	}
-}
 
 // findTool 经 tools/list 按名称取回指定工具声明(不依赖 SDK 返回顺序)。
 func findTool(t *testing.T, session *mcp.ClientSession, ctx context.Context, name string) *mcp.Tool {
