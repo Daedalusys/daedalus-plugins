@@ -9,15 +9,35 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
+
+// TestMain 把审计链指向临时文件:六个工具的成功/被拒调用都会真实追加哈希链
+// 条目,若不隔离,解析链会落到默认 /var/log——无写权限的环境徒增 stderr
+// 警告、有权限的机器污染真实审计链(测试隔离纪律,与 fs/service 同款)。
+// 个别测试用 t.Setenv 覆写本基线以做精确计数。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-blueprint-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // newTestApp 构造真实注册表(嵌入蓝图)+ app,供内存会话测试。
 func newTestApp(t *testing.T) *app {
@@ -145,5 +165,48 @@ func TestInspectTool_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(text, "no-such-blueprint") {
 		t.Errorf("错误文本应含蓝图名, 实际: %s", text)
+	}
+}
+
+// TestAudit_ListAppendsOneLine 钉 blueprint_list 的审计口径(镜像 fs 的
+// 审计钉死测试):一次成功调用恰追加一条哈希链条目,identity 固定
+// daedalus-blueprint、outcome 固定 success、args 为空对象;audit.Verify
+// 证链。t.Setenv 把链指到本测试独占文件,精确计数不被其他测试污染。
+func TestAudit_ListAppendsOneLine(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv(audit.EnvLogPath, logPath)
+	a := newTestApp(t)
+	session, ctx := connectServer(t, a)
+
+	res, text := callText(t, session, ctx, "blueprint_list", map[string]any{})
+	if res.IsError {
+		t.Fatalf("blueprint_list 返回错误: %s", text)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("读取审计日志失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("审计条数 = %d, want 1(单次成功调用恰一条):\n%s", len(lines), raw)
+	}
+	var line struct {
+		Identity string         `json:"identity"`
+		Tool     string         `json:"tool"`
+		Args     map[string]any `json:"args"`
+		Outcome  string         `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &line); err != nil {
+		t.Fatalf("审计条目解析失败: %v\n%s", err, lines[0])
+	}
+	if line.Identity != "daedalus-blueprint" || line.Tool != "blueprint_list" || line.Outcome != "success" {
+		t.Errorf("条目字段漂移: %+v", line)
+	}
+	if len(line.Args) != 0 {
+		t.Errorf("blueprint_list 无入参,args 应为空对象: %v", line.Args)
+	}
+	if n, err := audit.Verify(logPath); err != nil || n != 1 {
+		t.Errorf("audit.Verify = (%d, %v), want (1, nil)", n, err)
 	}
 }

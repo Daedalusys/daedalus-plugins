@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Daedalusys/daedalus-sdk/audit"
 )
 
 // callTool 通用 tools/call:返回 (结果, 首个文本块)。
@@ -231,5 +234,48 @@ func TestUsecToRFC3339(t *testing.T) {
 		if got := usecToRFC3339(in); got != want {
 			t.Errorf("usecToRFC3339(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestSystemdAudit_FailedAppendsEntry 钉 systemd_failed 的审计口径(镜像
+// fs 的审计钉死测试):一次成功调用恰追加一条哈希链条目,identity 固定
+// daedalus-service、tool/outcome 逐字对齐;t.Setenv 把链指到本测试独占
+// 文件,精确计数不被 TestMain 基线与其他测试污染。
+func TestSystemdAudit_FailedAppendsEntry(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv(audit.EnvLogPath, logPath)
+	fakeSystemctl(t, failedFixtureOutput)
+	session, ctx := connectSession(t)
+
+	res, text := callNamedTool(t, session, ctx, "systemd_failed", map[string]any{})
+	if res.IsError {
+		t.Fatalf("合法调用被误判为错误: %s", text)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("读取审计日志失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("审计条数 = %d, want 1(单次成功调用恰一条):\n%s", len(lines), raw)
+	}
+	var line struct {
+		Identity string         `json:"identity"`
+		Tool     string         `json:"tool"`
+		Args     map[string]any `json:"args"`
+		Outcome  string         `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &line); err != nil {
+		t.Fatalf("审计条目解析失败: %v\n%s", err, lines[0])
+	}
+	if line.Identity != "daedalus-service" || line.Tool != "systemd_failed" || line.Outcome != "success" {
+		t.Errorf("条目字段漂移: %+v", line)
+	}
+	if len(line.Args) != 0 {
+		t.Errorf("systemd_failed 无入参,args 应为空对象: %v", line.Args)
+	}
+	if n, err := audit.Verify(logPath); err != nil || n != 1 {
+		t.Errorf("audit.Verify = (%d, %v), want (1, nil)", n, err)
 	}
 }

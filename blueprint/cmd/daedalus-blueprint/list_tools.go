@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -64,6 +65,8 @@ func registerInspectTool(server *mcp.Server, a *app) {
 // listIn 是 blueprint_list 的输入(In 类型为 map 以满足 object 约束)。
 type listIn map[string]any
 
+// handleList 是 blueprint_list 的审计入口:纯只读遍历注册表,正常恒
+// success;序列化故障(理论面)记 error。args 为空对象,尽力而为。
 func handleList(a *app) func(context.Context, *mcp.CallToolRequest, listIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, _ listIn) (*mcp.CallToolResult, any, error) {
 		summaries := make([]blueprintSummary, 0, len(a.reg.orderedIDs()))
@@ -78,7 +81,13 @@ func handleList(a *app) func(context.Context, *mcp.CallToolRequest, listIn) (*mc
 				Description: b.Description,
 			})
 		}
-		return jsonResult(summaries), nil, nil
+		res := jsonResult(summaries)
+		outcome := "success"
+		if res.IsError {
+			outcome = "error"
+		}
+		recordAudit("blueprint_list", outcome, map[string]any{}, nil)
+		return res, nil, nil
 	}
 }
 
@@ -86,32 +95,45 @@ type inspectIn struct {
 	Name string `json:"name" jsonschema:"蓝图 id。"`
 }
 
+// handleInspect 是 blueprint_inspect 的审计入口:不存在的蓝图名属入参校验
+// 拒绝 denied,序列化故障 error,其余 success。args 只记录入参 name。
 func handleInspect(a *app) func(context.Context, *mcp.CallToolRequest, inspectIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in inspectIn) (*mcp.CallToolResult, any, error) {
-		cb, ok := a.reg.get(in.Name)
-		if !ok {
-			return toolErrorf("blueprint %q 不存在", in.Name), nil, nil
-		}
-		b := cb.Blueprint
-		detail := blueprintDetail{
-			ID:                 b.ID,
-			DisplayName:        b.DisplayName,
-			Version:            b.Version,
-			Description:        b.Description,
-			Category:           b.Category,
-			OutputPathTemplate: b.OutputPathTmpl,
-			ReloadService:      b.ReloadService,
-			RequiredTools:      b.RequiredTools,
-			TemplatePreview:    cb.templateRaw,
-			PostCheckPreview:   cb.postCheckCmd,
-			ReadmeSummary:      cb.readmeSummary,
-		}
-		if len(cb.schemaRaw) > 0 {
-			var s any
-			if err := json.Unmarshal(cb.schemaRaw, &s); err == nil {
-				detail.Schema = s
-			}
-		}
-		return jsonResult(detail), nil, nil
+		res, outcome, cause := inspectResult(a, in)
+		recordAudit("blueprint_inspect", outcome, map[string]any{"name": in.Name}, cause)
+		return res, nil, nil
 	}
+}
+
+func inspectResult(a *app, in inspectIn) (*mcp.CallToolResult, string, error) {
+	cb, ok := a.reg.get(in.Name)
+	if !ok {
+		err := fmt.Errorf("blueprint %q 不存在", in.Name)
+		return toolError(err), "denied", err
+	}
+	b := cb.Blueprint
+	detail := blueprintDetail{
+		ID:                 b.ID,
+		DisplayName:        b.DisplayName,
+		Version:            b.Version,
+		Description:        b.Description,
+		Category:           b.Category,
+		OutputPathTemplate: b.OutputPathTmpl,
+		ReloadService:      b.ReloadService,
+		RequiredTools:      b.RequiredTools,
+		TemplatePreview:    cb.templateRaw,
+		PostCheckPreview:   cb.postCheckCmd,
+		ReadmeSummary:      cb.readmeSummary,
+	}
+	if len(cb.schemaRaw) > 0 {
+		var s any
+		if err := json.Unmarshal(cb.schemaRaw, &s); err == nil {
+			detail.Schema = s
+		}
+	}
+	res := jsonResult(detail)
+	if res.IsError {
+		return res, "error", nil
+	}
+	return res, "success", nil
 }
