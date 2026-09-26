@@ -373,10 +373,10 @@ func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_MissingFallsBackToDefault 固定稳健性要求:
-// 显式指向缺失 = 硬错误(不静默降级);整体缺失 = Default 回退、
-// pathguard 白名单保持现状 3 目录、applyPolicy 零错误(服务器可启动)。
-func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {
+// TestPolicyInjection_MissingFailClosed 固定缺失语义:
+// 显式指向缺失 = 硬错误(不静默降级);整体缺失默认 fail-closed 拒启,
+// 仅 DAEDALUS_POLICY_MODE=development opt-in 才回退 Default(白名单 3 目录)。
+func TestPolicyInjection_MissingFailClosed(t *testing.T) {
 	orig := slices.Clone(pathguard.AllowedDirs)
 	t.Cleanup(func() { pathguard.WithAllowedDirs(orig) })
 
@@ -387,11 +387,15 @@ func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {
 
 	t.Setenv(policy.EnvPolicyPath, "")
 	if _, err := os.Stat(policy.ProductionPath); err == nil {
-		t.Skip("本机存在生产策略,跳过缺失回退演练")
+		t.Skip("本机存在生产策略,跳过缺失演练")
 	}
 	t.Chdir(t.TempDir()) // 空目录上溯不可能命中仓库回溯路径。
+	if err := applyPolicy(); err == nil {
+		t.Fatal("全缺失应 fail-closed 拒绝启动")
+	}
+	t.Setenv(policy.EnvPolicyMode, policy.PolicyModeDevelopment)
 	if err := applyPolicy(); err != nil {
-		t.Fatalf("全缺失应回退 Default 并成功: %v", err)
+		t.Fatalf("development opt-in 应回退 Default 并成功: %v", err)
 	}
 	if !slices.Equal(pathguard.AllowedDirs, []string{"/home", "/var/log", "/tmp"}) {
 		t.Errorf("Default 回退后白名单异常: %v", pathguard.AllowedDirs)

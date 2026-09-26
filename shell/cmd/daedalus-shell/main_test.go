@@ -515,7 +515,7 @@ func TestPolicyInjection_AllowCommandsEnvReplacesPolicy(t *testing.T) {
 
 // TestPolicyInjection_CorruptRefusesStartup 固定 fail-closed:
 // 损坏 TOML → applyPolicy 报错,服务器 main 据此拒绝启动;
-// 与"文件缺失回退 Default"严格区分。
+// 与"文件缺失默认 fail-closed 拒启"严格区分。
 func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "corrupt.toml"))
 	if _, err := applyPolicy(); err == nil {
@@ -523,29 +523,29 @@ func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 	}
 }
 
-// TestPolicyInjection_MissingFallsBackToDefault 固定稳健性要求:
-// 无 policy.toml 也能启动 —— LoadOrDefault 回退 Default,
-// 注入后行为与现状硬编码常量完全一致(uname 放行、rm 拒绝)。
-func TestPolicyInjection_MissingFallsBackToDefault(t *testing.T) {
+// TestPolicyInjection_MissingFailClosed 固定缺失语义:无 policy.toml 时
+// LoadOrDefault 默认 fail-closed 拒绝启动;仅 DAEDALUS_POLICY_MODE=development
+// 显式 opt-in 才回退 Default,回退结果与现状硬编码常量一致(15 命令)。
+func TestPolicyInjection_MissingFailClosed(t *testing.T) {
 	t.Setenv(policy.EnvPolicyPath, filepath.Join(t.TempDir(), "absent.toml"))
 	// 显式指向不存在 → 硬错误(不静默降级):
 	if _, err := policy.Load(""); err == nil {
 		t.Fatal("显式指向缺失应报 IO 错误")
 	}
-	// 显式指向不存在 → 硬错误(不静默降级):
-	if _, err := policy.Load(""); err == nil {
-		t.Fatal("显式指向缺失应报 IO 错误")
-	}
 	// 清空 env 后再验证开发态回溯不可得(chdir 到临时目录,测试结束自动还原)
-	// 时的 Default 回退:
+	// 时的缺失 fail-closed 与 development 回退:
 	t.Setenv(policy.EnvPolicyPath, "")
 	t.Chdir(t.TempDir())
 	if _, err := os.Stat(policy.ProductionPath); err == nil {
-		t.Skip("本机存在生产策略,跳过缺失回退演练")
+		t.Skip("本机存在生产策略,跳过缺失演练")
 	}
+	if _, err := policy.LoadOrDefault(); err == nil {
+		t.Fatal("缺失应 fail-closed 拒绝启动,而非静默回退 Default")
+	}
+	t.Setenv(policy.EnvPolicyMode, policy.PolicyModeDevelopment)
 	p, err := policy.LoadOrDefault()
 	if err != nil {
-		t.Fatalf("缺失应回退 Default: %v", err)
+		t.Fatalf("development opt-in 应回退 Default: %v", err)
 	}
 	if len(p.Shell.AllowedCommands) != 15 {
 		t.Fatalf("Default 命令数 = %d, want 15", len(p.Shell.AllowedCommands))

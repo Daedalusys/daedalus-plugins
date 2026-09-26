@@ -568,11 +568,15 @@ func TestApplyPolicyMissing(t *testing.T) {
 
 	t.Setenv(policy.EnvPolicyPath, "")
 	if _, err := os.Stat(policy.ProductionPath); err == nil {
-		t.Skip("本机存在生产策略,跳过缺失回退演练")
+		t.Skip("本机存在生产策略,跳过缺失演练")
 	}
 	t.Chdir(t.TempDir()) // 空目录上溯不可能命中仓库回溯路径(含 testdata 夹具)。
+	if err := applyPolicy(); err == nil {
+		t.Fatal("策略全缺失应 fail-closed 拒绝启动")
+	}
+	t.Setenv(policy.EnvPolicyMode, policy.PolicyModeDevelopment)
 	if err := applyPolicy(); err != nil {
-		t.Fatalf("策略全缺失应回退 Default 并成功: %v", err)
+		t.Fatalf("development opt-in 应回退 Default 并成功: %v", err)
 	}
 	if !slices.Equal(pathguard.AllowedDirs, []string{"/home", "/var/log", "/tmp"}) {
 		t.Errorf("Default 回退后白名单异常: %v", pathguard.AllowedDirs)
