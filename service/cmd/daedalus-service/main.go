@@ -55,7 +55,10 @@ var queryProperties = []string{
 
 // unitNamePattern 是单元名白名单正则:仅字母/数字/下划线/点/@/-,天然排除
 // 路径分隔符、shell 元字符、空白与注入语法;".." 遍历由 normalizeUnitName 兜底。
-var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
+// 首字符类刻意排除 `-`:systemd 单元名语法上不存在前导中划线,而前导 `-`
+// 会被 `systemctl show <unit>` 解析成选项旗标——argv 注入面在源头即拒,
+// 合法名永不抵达 exec。
+var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$`)
 
 type serviceQueryIn struct {
 	Name string `json:"name"`

@@ -276,6 +276,9 @@ func TestNormalizeUnitName(t *testing.T) {
 		{"a/b", "", true}, {"a\\b", "", true}, // 路径分隔符
 		{"a b", "", true}, {"a;b", "", true}, {"$(id)", "", true}, // 空白与 shell 注入
 		{"café", "", true}, {"x\x00y", "", true}, // 非 ASCII 与空字节
+		// 前导 `-` 守门:systemd 单元名语法不存在前导中划线,`--all`/`-type` 之类
+		// 会被 `systemctl show <unit>` 解析成选项旗标(argv 注入),源头即拒。
+		{"-sshd", "", true}, {"--all", "", true}, {"-q", "", true},
 	}
 	for _, tc := range cases {
 		got, err := normalizeUnitName(tc.in)

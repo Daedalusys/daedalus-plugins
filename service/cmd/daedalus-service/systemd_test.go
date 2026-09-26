@@ -208,6 +208,8 @@ func TestNormalizeUnitTyped(t *testing.T) {
 		{"a..b.service", "", "", true}, // 遍历
 		{"x.unknown", "", "", true},    // 表外类型后缀
 		{"", "timer", "", true},
+		{"-foo.timer", "", "", true}, // 前导 `-`:会被 systemctl show 解析成旗标,源头拒
+		{"--state=x", "timer", "", true},
 	}
 	for _, tc := range cases {
 		got, err := normalizeUnitTyped(tc.in, tc.def)
