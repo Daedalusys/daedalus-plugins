@@ -39,6 +39,9 @@ func main() {
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !isCleanShutdown(err) {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
+		// 家族统一纪律:非正常结束必须非零退出——宿主据此判定子服务器
+		// 死亡并重启;静默退 0 会把启动失败伪装成"干净关闭"。
+		os.Exit(1)
 	}
 }
 
