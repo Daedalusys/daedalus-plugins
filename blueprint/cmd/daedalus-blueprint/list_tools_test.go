@@ -16,11 +16,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/policy"
 )
 
 // newTestApp 构造真实注册表(嵌入蓝图)+ app,供内存会话测试。
 func newTestApp(t *testing.T) *app {
 	t.Helper()
+	// 全新 CI 环境回溯不到仓库 policy.toml,而策略缺失默认 fail-closed:
+	// 测试显式 development opt-in 回退内置默认(测试各自覆写所需边界)。
+	t.Setenv(policy.EnvPolicyMode, policy.PolicyModeDevelopment)
 	reg, err := newRegistry(blueprint.MustLoad(EmbeddedBlueprints()))
 	if err != nil {
 		t.Fatalf("编译注册表失败: %v", err)

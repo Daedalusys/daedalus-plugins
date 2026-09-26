@@ -6,7 +6,8 @@
 // 拒绝语义与 ts shellExec 一致:验证失败返回结果对象(126)而非协议错误。
 //
 // 策略来源:白名单/路径/环境/超时启动时从 shared/policy.toml 读取并注入
-// shellpolicy;文件缺失回退 Default(),损坏则拒绝启动(fail-closed);
+// shellpolicy;文件缺失或损坏一律拒绝启动(fail-closed,回退 Default 需
+// DAEDALUS_POLICY_MODE=development 显式 opt-in);
 // ALLOW_COMMANDS 环境变量保持 REPLACE(整体替换)语义。
 package main
 
@@ -74,8 +75,8 @@ type auditEntry struct {
 }
 
 func main() {
-	// 单一事实源:启动时读 shared/policy.toml 并注入 shellpolicy。文件整体缺失时
-	// LoadOrDefault 回退 Default();损坏/字段缺失属 fail-closed → 拒绝启动。
+	// 单一事实源:启动时读 shared/policy.toml 并注入 shellpolicy。缺失/损坏/字段
+	// 缺失一律 fail-closed → 拒绝启动(仅 development opt-in 才回退 Default())。
 	p, err := applyPolicy()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
@@ -99,7 +100,8 @@ func main() {
 	}
 }
 
-// applyPolicy 加载策略(缺失回退 Default)并注入 shellpolicy 包级常量,使
+// applyPolicy 加载策略(缺失默认 fail-closed,development opt-in 才回退
+// Default)并注入 shellpolicy 包级常量,使
 // 白名单/路径前缀/blocked 清单/净化环境/超时全部跟随 policy.toml;与测试共用
 // 同一入口(测试经 DAEDALUS_POLICY_PATH 指向 testdata)。
 func applyPolicy() (*policy.Policy, error) {

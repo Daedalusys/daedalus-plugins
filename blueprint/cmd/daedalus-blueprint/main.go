@@ -95,7 +95,8 @@ func newApp(reg *registry) *app {
 	}
 }
 
-// applyPolicy 加载策略(缺失回退 Default)并完成接线:
+// applyPolicy 加载策略(缺失默认 fail-closed,development opt-in 才回退
+// Default)并完成接线:
 //  1. RegisterBlueprintsPostCheckSource 把 PostCheckCommands 注入 post_check
 //     白名单;2. WithPolicy(p) 注入主白名单/路径/超时;3. 失败(fail-closed)拒启。
 func applyPolicy() error {

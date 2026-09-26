@@ -3,7 +3,8 @@
 // 行为规格源:fs_server.ts(生产实现)。提供 4 个工具(read_file / write_file /
 // list_dir / move_file),所有路径经由 internal/pathguard 白名单校验(默认
 // /home、/var/log、/tmp);Go 无运行时权限标志,安全边界全部 in-code 强制。
-// 白名单启动时从 shared/policy.toml 读取注入:缺失回退 Default(),损坏拒启。
+// 白名单启动时从 shared/policy.toml 读取注入:缺失或损坏一律 fail-closed 拒启
+// (回退 Default 需 DAEDALUS_POLICY_MODE=development 显式 opt-in)。
 //
 // 工具描述、参数名(path/content/src/dst)、required 列表与 ToolAnnotations 与
 // fs_server.ts 逐字一致;错误结果对应其 handleJsonRpcMessage 的 catch 分支:
@@ -56,8 +57,8 @@ type (
 
 func main() {
 	// 单一事实源:启动时读 shared/policy.toml 并注入
-	// pathguard。文件整体缺失时 LoadOrDefault 回退 Default()(服务器
-	// 仍可启动);文件存在但损坏/字段缺失属 fail-closed → 拒绝启动。
+	// pathguard。文件整体缺失或存在但损坏/字段缺失一律 fail-closed → 拒绝启动
+	// (仅 DAEDALUS_POLICY_MODE=development 显式 opt-in 才回退 Default())。
 	if err := applyPolicy(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
 		os.Exit(1)
@@ -76,9 +77,10 @@ func main() {
 	}
 }
 
-// applyPolicy 加载策略(缺失回退 Default)并把 [fs].allowed_dirs 注入
-// pathguard 包级白名单。与测试共用同一入口:测试经 DAEDALUS_POLICY_PATH
-// 环境变量指向 testdata 后调用本函数即可演练白名单跟随。
+// applyPolicy 加载策略(缺失默认 fail-closed,development opt-in 才回退
+// Default)并把 [fs].allowed_dirs 注入 pathguard 包级白名单。与测试共用同一
+// 入口:测试经 DAEDALUS_POLICY_PATH 环境变量指向 testdata 后调用本函数即可
+// 演练白名单跟随。
 func applyPolicy() error {
 	p, err := policy.LoadOrDefault()
 	if err != nil {

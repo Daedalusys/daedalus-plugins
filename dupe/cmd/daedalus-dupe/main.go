@@ -6,8 +6,8 @@
 //
 // 与 fs 同属 L0 只读能力:所有路径先经 daedalus-sdk/pathguard 白名单校验
 // (默认 /home、/var/log、/tmp),不写文件、不调外部进程、不发网络请求。白名单
-// 启动时从 shared/policy.toml 读取注入:缺失回退 Default(),损坏拒启
-// (fail-closed)。长扫描经 MCP notifications/progress 上报进度,不打印日志
+// 启动时从 shared/policy.toml 读取注入:缺失或损坏一律 fail-closed 拒启
+// (回退 Default 需 DAEDALUS_POLICY_MODE=development 显式 opt-in)。长扫描经 MCP notifications/progress 上报进度,不打印日志
 // 以免污染 JSON-RPC 数据流。
 package main
 
@@ -86,8 +86,8 @@ type scannedFile struct {
 }
 
 func main() {
-	// 单一事实源:启动时读 shared/policy.toml 并注入 pathguard。文件整体缺失时
-	// 回退 Default()(服务器仍可启动);损坏/字段缺失属 fail-closed → 拒绝启动。
+	// 单一事实源:启动时读 shared/policy.toml 并注入 pathguard。缺失/损坏/字段
+	// 缺失一律 fail-closed → 拒绝启动(仅 development opt-in 才回退 Default())。
 	if err := applyPolicy(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
 		os.Exit(1)
@@ -106,7 +106,8 @@ func main() {
 	}
 }
 
-// applyPolicy 加载策略(缺失回退 Default)并把 [fs].allowed_dirs 注入
+// applyPolicy 加载策略(缺失默认 fail-closed,development opt-in 才回退
+// Default)并把 [fs].allowed_dirs 注入
 // pathguard 包级白名单。与测试共用同一入口:测试经 DAEDALUS_POLICY_PATH 指向
 // testdata 后调用本函数即可演练白名单跟随。
 func applyPolicy() error {
