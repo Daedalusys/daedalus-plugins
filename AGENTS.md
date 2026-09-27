@@ -5,7 +5,7 @@
 **Siblings:** `../daedalus-core/` (Daedalusys, runtime + image), `../daedalus-sdk/` (11 安全核心包)
 
 ## OVERVIEW
-Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。9 个 Go 能力插件
+Daedalus 插件仓根 = 四层结构中的**插件层**。9 个 Go 能力插件
 (`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,
 另有 `dupe` / `trace` / `proc` 观测型插件尚未走 release 供料,均 `runtime=native`) 的 monorepo,
 独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
@@ -34,7 +34,7 @@ daedalus-plugins/
 ├── sysinfo/                         # daedalus.sysinfo - OS/hardware/network
 ├── service/                         # daedalus.service - systemd 单元只读观测
 └── blueprint/                       # daedalus.blueprint - 6 配置蓝图
-    └── blueprints/                  # ★ 数据目录 (6 蓝图 × 6 文件; //go:embed 源)
+    └── blueprints/                  # ★ 数据目录 (6 蓝图 × 5 文件; //go:embed 源)
         ├── nginx-vhost/
         ├── nginx-reverse-proxy/
         ├── postgres-db/
@@ -42,7 +42,7 @@ daedalus-plugins/
         ├── redis-acl/
         └── haproxy-backend/
         # 每目录: manifest.json + schema.json + template.tmpl +
-        #         pre_check.sh + post_check.sh + README.md
+        #         post_check.sh + README.md
 ```
 
 ## WHERE TO LOOK
@@ -102,7 +102,7 @@ daedalus-plugins/
 
 插件仓不独立发布 — 发布以**主仓镜像构建**为出口:
 
-1. **改插件源码**(本仓 `cmd/` 或 manifest) → 本仓 `go build ./...` + `go test ./...` 自检;
+1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
 3. **打包**: 主仓 `just plugin-pack` → 构建全部 Go 二进制 → 同步到本仓各 `<cap>/bin/` → `daedalus-plugin-pack` 打 zip(注入逐条目 sha256 checksums + manifest 规范化自摘要)→ `-verify --keep` 解压到镜像树安装态;
 4. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
@@ -126,8 +126,10 @@ cd fs && go build ./... && go test ./...
 cd shell && go build ./... && go test ./...
 cd blueprint && go build ./... && go test ./...
 
-# 全仓构建/测试 (走 go.work 聚合)
-cd daedalus-plugins && go build ./... && go test ./...
+# 全仓构建/测试 (仓根不是模块,必须逐 cap 独立跑;与 CI test.yml 同款循环)
+for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
+    (cd "$cap" && go build ./... && go test ./...)
+done
 
 # 单仓 clone (无兄弟仓): 启用 go.work
 cp go.work.example go.work

@@ -5,6 +5,8 @@ package main
 // 流程:schema 校验 → 明文 secret 检测 → 路径模板 {param} 替换 → 目标路径
 // 越界校验 → 配置模板渲染(missingkey=error)→ 行级 diff → plan_id +
 // confirm_token → 返回并把 plan 存入进程内 plan store 供 apply/status 取用。
+// 每次调用在 handleRender choke point 落恰一条审计(只记入参摘要,渲染内容
+// 与参数值不进链)。
 //
 // nginx `$var` 隐患:Go text/template 只用 `{{…}}` 识别动作,`$host` 与 postgres
 // 的 `$$` dollar-quoting、`$1` 反向引用都不被当作变量,missingkey=error 下原文
@@ -57,71 +59,92 @@ func registerRenderTool(server *mcp.Server, a *app) {
 	}, handleRender(a))
 }
 
+// handleRender 是 blueprint_render 的审计 choke point:args 只记录入参摘要
+// (name,成功时补 plan_id 与"需确认令牌"事实),渲染内容与参数值——可能
+// 内嵌 secret:// 引用或敏感输入——一律严禁进链。入参 / schema / 白名单 /
+// 模板校验拒绝记 denied,序列化故障记 error,其余 success。
 func handleRender(a *app) func(context.Context, *mcp.CallToolRequest, renderIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in renderIn) (*mcp.CallToolResult, any, error) {
-		cb, ok := a.reg.get(in.Name)
-		if !ok {
-			return toolErrorf("blueprint %q 不存在", in.Name), nil, nil
+		res, planID, outcome, cause := renderResult(a, in)
+		args := map[string]any{"name": in.Name}
+		if planID != "" {
+			args["plan_id"] = planID
+			args["confirm_required"] = true
 		}
-		params, err := normalizeParams(in.Params)
-		if err != nil {
-			return toolErrorf("params 解析失败: %v", err), nil, nil
-		}
-
-		// 明文 secret 检测(fail-closed,先于 schema:安全语义错误优先于
-		// 格式细节错误,且明文密码即便侥幸过 schema pattern 也必须在此被拒)。
-		if err := detectPlaintextSecrets(params); err != nil {
-			return toolError(err), nil, nil
-		}
-
-		if cb.schemaResolved != nil {
-			if err := cb.schemaResolved.Validate(params); err != nil {
-				return toolErrorf("params 校验失败: %v", err), nil, nil
-			}
-		}
-
-		data := fillTemplateData(cb.schemaResolved, params)
-
-		target, err := renderPath(cb.Blueprint.OutputPathTmpl, data)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		if !validateOutputPath(a.outputDirs, target) {
-			return toolErrorf("目标路径 %q 越出允许目录白名单 (%s)", target, strings.Join(a.outputDirs, ", ")), nil, nil
-		}
-
-		var buf bytes.Buffer
-		if err := cb.template.Execute(&buf, data); err != nil {
-			return toolErrorf("模板渲染失败: %v", err), nil, nil
-		}
-		rendered := buf.String()
-
-		diff := ""
-		if existing, err := os.ReadFile(target); err == nil {
-			diff = lineDiff(string(existing), rendered)
-		}
-
-		planID := newPlanID()
-		tok := blueprint.GenerateConfirmToken(planID)
-
-		a.plans.put(planID, renderedPlan{
-			Name:     in.Name,
-			Params:   data,
-			Rendered: rendered,
-			Target:   target,
-			Token:    tok,
-		})
-
-		out := renderOut{
-			PlanID:          planID,
-			RenderedContent: rendered,
-			Diff:            diff,
-			Warnings:        nil,
-			TargetPath:      target,
-			ConfirmToken:    tok.Token,
-		}
-		return jsonResult(out), nil, nil
+		recordAudit("blueprint_render", outcome, args, cause)
+		return res, nil, nil
 	}
+}
+
+func renderResult(a *app, in renderIn) (*mcp.CallToolResult, string, string, error) {
+	cb, ok := a.reg.get(in.Name)
+	if !ok {
+		err := fmt.Errorf("blueprint %q 不存在", in.Name)
+		return toolError(err), "", "denied", err
+	}
+	params, err := normalizeParams(in.Params)
+	if err != nil {
+		return toolErrorf("params 解析失败: %v", err), "", "denied", err
+	}
+
+	// 明文 secret 检测(fail-closed,先于 schema:安全语义错误优先于
+	// 格式细节错误,且明文密码即便侥幸过 schema pattern 也必须在此被拒)。
+	if err := detectPlaintextSecrets(params); err != nil {
+		return toolError(err), "", "denied", err
+	}
+
+	if cb.schemaResolved != nil {
+		if err := cb.schemaResolved.Validate(params); err != nil {
+			return toolErrorf("params 校验失败: %v", err), "", "denied", err
+		}
+	}
+
+	data := fillTemplateData(cb.schemaResolved, params)
+
+	target, err := renderPath(cb.Blueprint.OutputPathTmpl, data)
+	if err != nil {
+		return toolError(err), "", "denied", err
+	}
+	if !validateOutputPath(a.outputDirs, target) {
+		err := fmt.Errorf("目标路径 %q 越出允许目录白名单 (%s)", target, strings.Join(a.outputDirs, ", "))
+		return toolError(err), "", "denied", err
+	}
+
+	var buf bytes.Buffer
+	if err := cb.template.Execute(&buf, data); err != nil {
+		return toolErrorf("模板渲染失败: %v", err), "", "denied", err
+	}
+	rendered := buf.String()
+
+	diff := ""
+	if existing, err := os.ReadFile(target); err == nil {
+		diff = lineDiff(string(existing), rendered)
+	}
+
+	planID := newPlanID()
+	tok := blueprint.GenerateConfirmToken(planID)
+
+	a.plans.put(planID, renderedPlan{
+		Name:     in.Name,
+		Params:   data,
+		Rendered: rendered,
+		Target:   target,
+		Token:    tok,
+	})
+
+	out := renderOut{
+		PlanID:          planID,
+		RenderedContent: rendered,
+		Diff:            diff,
+		Warnings:        nil,
+		TargetPath:      target,
+		ConfirmToken:    tok.Token,
+	}
+	res := jsonResult(out)
+	if res.IsError {
+		return res, "", "error", nil
+	}
+	return res, planID, "success", nil
 }
 
 // normalizeParams 把任意 JSON 输入归一化为 map[string]any:params 以 any 接收,

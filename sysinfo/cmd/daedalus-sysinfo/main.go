@@ -24,11 +24,56 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/sysinfo"
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
 const serverName = "daedalus-sysinfo"
+
+// recordAudit 追加一条哈希链审计条目(只读工具,尽力而为,失败仅留一行
+// stderr 警告)。sysinfo 无参数工具不存在验证拒绝路径,且 SDK 把采集故障
+// 折叠进返回载荷的 error 键而非错误结果,故成功按 "success" 记录;仅当结果
+// 本身 isError(如序列化失败)按 "error"。本插件未接入 policy.toml,不传
+// LogPath,由 LogAudit 回退 DefaultLogPath()(与 daedalus-shell 解析链一致)。
+func recordAudit(tool string, res *mcp.CallToolResult) {
+	outcome := "success"
+	args := map[string]any{}
+	if res != nil && res.IsError {
+		outcome = "error"
+		if len(res.Content) > 0 {
+			if text, ok := res.Content[0].(*mcp.TextContent); ok {
+				args["error"] = shortText(text.Text)
+			}
+		}
+	}
+	var v *audit.Value
+	data, err := json.Marshal(args)
+	if err == nil {
+		v, err = audit.ParseValue(string(data))
+	}
+	if err == nil {
+		_, err = audit.LogAudit(audit.Entry{
+			Identity: serverName,
+			Tool:     tool,
+			Args:     v,
+			Outcome:  outcome,
+		})
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: 审计写入失败: %v\n", serverName, err)
+	}
+}
+
+// shortText 截取错误文本,防超大载荷灌进哈希链。
+func shortText(s string) string {
+	const maxRunes = 200
+	r := []rune(s)
+	if len(r) > maxRunes {
+		return string(r[:maxRunes]) + "…"
+	}
+	return string(r)
+}
 
 // emptyIn 是三个无参工具的输入类型(客户端 arguments 必须是 JSON 对象)。
 type emptyIn struct{}
@@ -82,7 +127,9 @@ func newServer(svc *sysinfo.Service) *mcp.Server {
 		Annotations: annotations,
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
 		// py 版返回 dict → FastMCP 以 JSON 文本(indent=2)呈现。
-		return jsonResult(svc.OSRelease()), nil, nil
+		res := jsonResult(svc.OSRelease())
+		recordAudit("os_release", res)
+		return res, nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -91,7 +138,9 @@ func newServer(svc *sysinfo.Service) *mcp.Server {
 		InputSchema: noArgsSchema,
 		Annotations: annotations,
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
-		return jsonResult(svc.HardwareInfo()), nil, nil
+		res := jsonResult(svc.HardwareInfo())
+		recordAudit("hardware_info", res)
+		return res, nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -100,7 +149,9 @@ func newServer(svc *sysinfo.Service) *mcp.Server {
 		InputSchema: noArgsSchema,
 		Annotations: annotations,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
-		return jsonResult(svc.NetworkStatus(ctx)), nil, nil
+		res := jsonResult(svc.NetworkStatus(ctx))
+		recordAudit("network_status", res)
+		return res, nil, nil
 	})
 
 	return server

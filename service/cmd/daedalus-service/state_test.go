@@ -17,21 +17,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/dirs"
 	"github.com/Daedalusys/daedalus-sdk/objectmodel"
 	"github.com/Daedalusys/daedalus-sdk/state"
 )
 
-// TestMain 为全包固定 DAEDALUS_STATE_PATH 基线:每次成功的
-// query/list 都会真实追加写 state.jsonl,若不隔离,dirs 解析链会落到
+// TestMain 为全包固定 DAEDALUS_STATE_PATH 与 DAEDALUS_AUDIT_LOG_PATH 基线:
+// 每次成功的 query/list 都会真实追加写 state.jsonl,若不隔离,dirs 解析链会落到
 // /var/lib/daedalus 或 $HOME/.local/share/daedalus——跑一遍测试就污染
-// 开发者真实状态记忆(测试隔离纪律)。个别测试用 t.Setenv 覆写本基线。
+// 开发者真实状态记忆(测试隔离纪律);审计同理不落默认 /var/log。
+// 个别测试用 t.Setenv 覆写本基线。
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "daedalus-service-state-*")
 	if err != nil {
 		os.Exit(1)
 	}
 	os.Setenv(dirs.EnvStatePath, filepath.Join(dir, "state.jsonl"))
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

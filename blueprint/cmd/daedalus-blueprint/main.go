@@ -22,6 +22,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
 	"github.com/Daedalusys/daedalus-sdk/policy"
 	"github.com/Daedalusys/daedalus-sdk/shellpolicy"
@@ -104,12 +105,27 @@ func applyPolicy() error {
 	if err != nil {
 		return fmt.Errorf("policy load failed, refusing to start: %w", err)
 	}
+	policyAuditLogPath = p.Audit.LogPath
 	// 因 policy↔shellpolicy 循环依赖,注册只能放消费方 main,不可放 policy 包 init。
 	shellpolicy.RegisterBlueprintsPostCheckSource(func(pp *policy.Policy) []string {
 		return pp.Blueprints.PostCheckCommands
 	})
 	shellpolicy.WithPolicy(p)
 	return nil
+}
+
+// policyAuditLogPath 是启动期捕获的策略 [audit].log_path;审计落点若各写各的
+// 会让同一身份分裂进多条链,验证即断链,故统一走 resolveAuditPath 解析链。
+var policyAuditLogPath string
+
+// resolveAuditPath 解析审计日志落点:DAEDALUS_AUDIT_LOG_PATH 环境变量优先,
+// 其次策略 [audit].log_path,皆空则由 LogAudit 回退 DefaultLogPath()
+// (与 daedalus-shell 的 auditPath 同一链序)。
+func resolveAuditPath() string {
+	if v := os.Getenv(audit.EnvLogPath); v != "" {
+		return v
+	}
+	return policyAuditLogPath
 }
 
 // isCleanShutdown 判定"正常结束"(与 daedalus-pkg/fs 同款)。

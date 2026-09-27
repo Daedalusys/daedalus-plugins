@@ -17,7 +17,7 @@
 └── i18n/                  # locale 文件（如有）
 ```
 
-**blueprint 插件**另有 `blueprints/` 数据目录（6 蓝图 × 6 文件），源码侧唯一事实源。
+**blueprint 插件**另有 `blueprints/` 数据目录（6 蓝图 × 5 文件），源码侧唯一事实源。
 
 ### 命名规范
 
@@ -33,6 +33,10 @@
 ### 独立 Go Module
 
 每个插件是独立 Go 模块（`module github.com/Daedalusys/daedalus-plugins/<cap>`），**不聚合到根模块**。跨插件共享代码 → 提 SDK，不要在本仓共享子包。
+
+### 审计落链
+
+每个工具的每次调用必须在 handler 的 choke point 经本 cap 的 `recordAudit` 落**恰一条**哈希链条目（唯一合规写入口是 SDK `audit.LogAudit`），结局词表固定为 `success` / `denied` / `error`——入参、schema、白名单、令牌的拒绝记 `denied`。`args` 只带入参摘要，渲染内容、参数值、令牌明文一律不进链。新增工具若无审计归属，`blueprint/cmd/daedalus-blueprint/audit_coverage_test.go` 那类按 `tools/list` 注册表的守门测试会失败（目前仅 blueprint 有该测试，其余 cap 待补）。
 
 ### 三仓平级布局
 
@@ -92,6 +96,7 @@ just plugin-pack   # 构建 Go + 同步 bin/ + 打 zip + 解压安装态
 | `shell=True` / `bash -c` / `sh -c` | 直 argv exec 经 shellpolicy 校验 |
 | 接受相对路径 / 空字节 / realpath 逃逸 | 必经 pathguard |
 | 在 `service` 插件内改 systemd 状态 | 状态变更一律经 `daedalus-tx` |
+| 绕过 `recordAudit` 直写审计文件 / 新工具不落链 | 每次调用必须恰一条链式条目，拒绝路径也要记 |
 | 手改 `cmd/daedalus-blueprint/blueprints/` | 数据源是 `blueprint/blueprints/`，`just blueprint-embed` 复制 |
 | manifest `resources[].kind` 加新 Kind 不同步 SDK | `76-daedalus-plugin-gen.sh` 拒构建 |
 | 独立发版本仓 | 镜像即发布物，主仓 `just build` 是唯一出口 |

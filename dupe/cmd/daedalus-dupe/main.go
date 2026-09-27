@@ -116,6 +116,7 @@ func applyPolicy() error {
 		return fmt.Errorf("policy load failed, refusing to start: %w", err)
 	}
 	pathguard.WithAllowedDirs(p.FS.AllowedDirs)
+	policyAuditLogPath = p.Audit.LogPath
 	return nil
 }
 
@@ -162,17 +163,32 @@ func newServer() *mcp.Server {
 
 // scanLarge 遍历 in.Dir,按体积降序返回最大的 top_n 个普通文件。目录符号链接
 // 一律不跟随(防白名单逃逸与目录环);单层目录读取失败跳过而不中断整体扫描。
+// 只读工具,审计尽力而为。
 func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput) (*mcp.CallToolResult, any, error) {
+	res, goErr, outcome, cause := scanLargeResult(ctx, req, in)
+	recordAudit("scan_large", outcome, map[string]any{
+		"dir":      in.Dir,
+		"min_size": in.MinSize,
+		"top_n":    in.TopN,
+	}, cause)
+	if goErr != nil {
+		return nil, nil, goErr
+	}
+	return res, nil, nil
+}
+
+func scanLargeResult(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput) (*mcp.CallToolResult, error, string, error) {
 	safeDir, err := pathguard.ValidatePath(in.Dir, false)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), nil, "denied", err
 	}
 	info, err := os.Stat(safeDir)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), nil, "error", err
 	}
 	if !info.IsDir() {
-		return toolError(fmt.Errorf("Target is not a directory: %s", in.Dir)), nil, nil
+		e := fmt.Errorf("Target is not a directory: %s", in.Dir)
+		return toolError(e), nil, "denied", e
 	}
 
 	topN := in.TopN
@@ -190,13 +206,13 @@ func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput)
 		})
 	}, func(scanned int) { reportProgress(ctx, req, scanned) })
 	if err != nil {
-		return nil, nil, err
+		return nil, err, "error", err
 	}
 
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Size > entries[j].Size })
 	select {
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+		return nil, ctx.Err(), "error", ctx.Err()
 	default:
 	}
 
@@ -205,9 +221,9 @@ func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput)
 	}
 	encoded, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), nil, "error", err
 	}
-	return textResult(string(encoded)), nil, nil
+	return textResult(string(encoded)), nil, "success", nil
 }
 
 // scanDupes 在 in.Dirs 目录集合内按 in.Algo 找出重复文件分组。算法语义:
@@ -216,27 +232,43 @@ func scanLarge(ctx context.Context, req *mcp.CallToolRequest, in ScanLargeInput)
 //   - sha256:按整文件 SHA-256 分组(最准、需要完整读取);
 //   - 每个目录先过 pathguard;同一路径跨目录去重,防止重复计数。
 func scanDupes(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput) (*mcp.CallToolResult, any, error) {
+	res, goErr, outcome, cause := scanDupesResult(ctx, req, in)
+	recordAudit("scan_dupes", outcome, map[string]any{
+		"dirs":     in.Dirs,
+		"min_size": in.MinSize,
+		"algo":     in.Algo,
+	}, cause)
+	if goErr != nil {
+		return nil, nil, goErr
+	}
+	return res, nil, nil
+}
+
+func scanDupesResult(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput) (*mcp.CallToolResult, error, string, error) {
 	switch in.Algo {
 	case algoSizeOnly, algoFirst1MB, algoSHA256:
 	default:
-		return toolError(fmt.Errorf("unknown algo %q (supported: size_only|first_1mb|sha256)", in.Algo)), nil, nil
+		e := fmt.Errorf("unknown algo %q (supported: size_only|first_1mb|sha256)", in.Algo)
+		return toolError(e), nil, "denied", e
 	}
 	if len(in.Dirs) == 0 {
-		return toolError(errors.New("dirs must contain at least one directory")), nil, nil
+		e := errors.New("dirs must contain at least one directory")
+		return toolError(e), nil, "denied", e
 	}
 
 	roots := make([]string, 0, len(in.Dirs))
 	for _, dir := range in.Dirs {
 		safeDir, err := pathguard.ValidatePath(dir, false)
 		if err != nil {
-			return toolError(err), nil, nil
+			return toolError(err), nil, "denied", err
 		}
 		info, err := os.Stat(safeDir)
 		if err != nil {
-			return toolError(err), nil, nil
+			return toolError(err), nil, "error", err
 		}
 		if !info.IsDir() {
-			return toolError(fmt.Errorf("Target is not a directory: %s", dir)), nil, nil
+			e := fmt.Errorf("Target is not a directory: %s", dir)
+			return toolError(e), nil, "denied", e
 		}
 		roots = append(roots, safeDir)
 	}
@@ -253,7 +285,7 @@ func scanDupes(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput)
 			files = append(files, *f)
 		}, func(scanned int) { reportProgress(ctx, req, scanned) })
 		if err != nil {
-			return nil, nil, err
+			return nil, err, "error", err
 		}
 	}
 
@@ -262,19 +294,19 @@ func scanDupes(ctx context.Context, req *mcp.CallToolRequest, in ScanDupesInput)
 		reportProgress(ctx, req, len(files)+done)
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err, "error", err
 	}
 	select {
 	case <-ctx.Done():
-		return nil, nil, ctx.Err()
+		return nil, ctx.Err(), "error", ctx.Err()
 	default:
 	}
 
 	encoded, err := json.MarshalIndent(groups, "", "  ")
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), nil, "error", err
 	}
-	return textResult(string(encoded)), nil, nil
+	return textResult(string(encoded)), nil, "success", nil
 }
 
 // walkFiles 以显式栈深度优先遍历 root(显式 os.Lstat,不用 filepath.WalkDir

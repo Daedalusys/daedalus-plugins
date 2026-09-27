@@ -15,9 +15,24 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/pathguard"
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
+
+// TestMain 把审计链指向临时文件:write_file/move_file 为 fail-closed,
+// 若沿用默认 /var/log 落点,无写权限的测试环境会把正常操作误判为断链。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-fs-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // connectSession 按 cmd/daedalus-smoke 实证形态建立内存内客户端/服务器会话,
 // 并在测试结束校验服务器随连接关闭而优雅退出。
@@ -399,5 +414,83 @@ func TestPolicyInjection_MissingFailClosed(t *testing.T) {
 	}
 	if !slices.Equal(pathguard.AllowedDirs, []string{"/home", "/var/log", "/tmp"}) {
 		t.Errorf("Default 回退后白名单异常: %v", pathguard.AllowedDirs)
+	}
+}
+
+// auditLine 是哈希链日志一行的最小解析形态。
+type auditLine struct {
+	Identity  string         `json:"identity"`
+	Tool      string         `json:"tool"`
+	Args      map[string]any `json:"args"`
+	Outcome   string         `json:"outcome"`
+	PrevHash  string         `json:"prev_hash"`
+	EntryHash string         `json:"entry_hash"`
+}
+
+// TestAuditLog_SuccessAndDenied 固定 fs 的审计口径:成功的 write_file 与被拒的
+// 越界 read_file 各追加一条;write 条目只记 path/bytes(正文严禁进链),denied 条目
+// 带 error 摘要;哈希链字段齐备且 Verify 通过。
+func TestAuditLog_SuccessAndDenied(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv(audit.EnvLogPath, logPath)
+
+	session, ctx := connectSession(t)
+	base := mustTempDir(t)
+	file := filepath.Join(base, "audited.txt")
+	secret := "正文严禁出现在审计链中的哨兵串"
+	if res, text := callToolText(t, session, ctx, "write_file", map[string]any{"path": file, "content": secret}); res.IsError {
+		t.Fatalf("write_file 失败: %s", text)
+	}
+	if res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": "/etc/shadow"}); !res.IsError {
+		t.Fatalf("/etc/shadow 竟然读取成功: %s", text)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("读取审计日志失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("审计条数 = %d, want 2:\n%s", len(lines), raw)
+	}
+	var entries [2]auditLine
+	for i, line := range lines {
+		if err := json.Unmarshal([]byte(line), &entries[i]); err != nil {
+			t.Fatalf("第 %d 行解析失败: %v\n%s", i+1, err, line)
+		}
+	}
+
+	w := entries[0]
+	if w.Identity != "daedalus-fs" || w.Tool != "write_file" || w.Outcome != "success" {
+		t.Errorf("write 条目字段漂移: %+v", w)
+	}
+	if w.Args["path"] != file {
+		t.Errorf("write args.path = %v, want %v", w.Args["path"], file)
+	}
+	if got, ok := w.Args["bytes"].(float64); !ok || int(got) != len(secret) {
+		t.Errorf("write args.bytes = %v, want %d", w.Args["bytes"], len(secret))
+	}
+	if strings.Contains(lines[0], secret) {
+		t.Error("文件内容泄漏进审计链")
+	}
+
+	r := entries[1]
+	if r.Identity != "daedalus-fs" || r.Tool != "read_file" || r.Outcome != "denied" {
+		t.Errorf("denied 条目字段漂移: %+v", r)
+	}
+	if msg, ok := r.Args["error"].(string); !ok || msg == "" {
+		t.Errorf("denied 条目 args.error 缺失: %v", r.Args["error"])
+	}
+	if r.Args["path"] != "/etc/shadow" {
+		t.Errorf("denied args.path = %v, want /etc/shadow", r.Args["path"])
+	}
+
+	for i, e := range entries {
+		if e.EntryHash == "" || e.PrevHash == "" {
+			t.Errorf("第 %d 条链字段缺失: %+v", i+1, e)
+		}
+	}
+	if n, err := audit.Verify(logPath); err != nil || n != 2 {
+		t.Errorf("audit.Verify = (%d, %v), want (2, nil)", n, err)
 	}
 }

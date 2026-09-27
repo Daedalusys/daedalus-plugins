@@ -42,4 +42,4 @@
 
 - 模板用 `{{- range $i, $srv := .backend_servers }}` 循环生成 `server` 行。
 - 模板含 `{{/* INSERTION_POINT */}}` 插入点,可追加 ACL 路由 / ssl 终止指令。
-- pre_check / post_check 均走 `haproxy -c -f` 对主配置做语法校验。
+- post_check 走 `haproxy -c -f` 对主配置做语法校验。

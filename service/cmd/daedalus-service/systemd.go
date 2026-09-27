@@ -131,32 +131,37 @@ func registerSystemdTools(server *mcp.Server, annotations *mcp.ToolAnnotations) 
 	}, handleSystemdDependencies)
 }
 
-func handleSystemdFailed(ctx context.Context, _ *mcp.CallToolRequest, _ systemdFailedIn) (*mcp.CallToolResult, any, error) {
+// 三个 systemd 工具的审计入口(handle*)拆住 systemd_audit.go,本文件保留
+// 实现面;结局判定统一按 audit.go 口径:denied=入参校验拒绝,error=systemctl
+// 执行失败或单元 not-found/masked,其余 success。systemdFailedResult 无入参。
+func systemdFailedResult(ctx context.Context) (*mcp.CallToolResult, string, error) {
+	const toolName = "systemd_failed"
 	out, err := runSystemctl(ctx, "list-units", "--state=failed", "--no-pager", "--no-legend")
 	if err != nil {
-		return raisedError("systemd_failed", err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	rows := parseUnitRows(out)
 	slices.SortFunc(rows, func(a, b failedUnitOut) int { return strings.Compare(a.Unit, b.Unit) })
-	return jsonResult(rows), nil, nil
+	return jsonResult(rows), "success", nil
 }
 
-func handleSystemdTimerNext(ctx context.Context, _ *mcp.CallToolRequest, in unitIn) (*mcp.CallToolResult, any, error) {
+func systemdTimerNextResult(ctx context.Context, in unitIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "systemd_timer_next"
 	unit, err := normalizeUnitTyped(in.Name, "timer")
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	// 视图专属门:显式给了非 .timer 后缀(属性表会全空,查询必然无意义)→ 拒。
 	if !strings.HasSuffix(unit, ".timer") {
-		return raisedError(toolName, fmt.Errorf("systemd_timer_next 仅接受 timer 单元: %q", unit)), nil, nil
+		denied := fmt.Errorf("systemd_timer_next 仅接受 timer 单元: %q", unit)
+		return raisedError(toolName, denied), "denied", denied
 	}
 	props, err := runSystemctlShowProps(ctx, unit, systemdTimerProperties)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	if notFound := unitNotFoundResult(unit, props); notFound != nil {
-		return notFound, nil, nil
+		return notFound, "error", fmt.Errorf("unit %s not found", unit)
 	}
 	last := props["LastTriggerUSec"]
 	next := props["NextElapseUSecRealtime"]
@@ -166,21 +171,21 @@ func handleSystemdTimerNext(ctx context.Context, _ *mcp.CallToolRequest, in unit
 		LastTriggerUSec: last, LastTrigger: usecToRFC3339(last),
 		NextElapseUSecRealtime: next, NextElapse: usecToRFC3339(next),
 		NextElapseUSecMonotonic: props["NextElapseUSecMonotonic"],
-	}), nil, nil
+	}), "success", nil
 }
 
-func handleSystemdDependencies(ctx context.Context, _ *mcp.CallToolRequest, in unitIn) (*mcp.CallToolResult, any, error) {
+func systemdDependenciesResult(ctx context.Context, in unitIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "systemd_dependencies"
 	unit, err := normalizeUnitTyped(in.Name, "")
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	props, err := runSystemctlShowProps(ctx, unit, systemdDepsProperties)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	if notFound := unitNotFoundResult(unit, props); notFound != nil {
-		return notFound, nil, nil
+		return notFound, "error", fmt.Errorf("unit %s not found", unit)
 	}
 	deps := dependenciesOut{Unit: unit, LoadState: props["LoadState"]}
 	for _, p := range []struct {
@@ -194,7 +199,7 @@ func handleSystemdDependencies(ctx context.Context, _ *mcp.CallToolRequest, in u
 	} {
 		*p.dst = sortedFields(props[p.prop])
 	}
-	return jsonResult(deps), nil, nil
+	return jsonResult(deps), "success", nil
 }
 
 // normalizeUnitTyped 是全景视图三工具的单元名门:字符类/遍历检查沿用

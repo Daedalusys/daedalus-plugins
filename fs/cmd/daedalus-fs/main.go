@@ -87,6 +87,7 @@ func applyPolicy() error {
 		return fmt.Errorf("policy load failed, refusing to start: %w", err)
 	}
 	pathguard.WithAllowedDirs(p.FS.AllowedDirs)
+	policyAuditLogPath = p.Audit.LogPath
 	return nil
 }
 
@@ -160,61 +161,87 @@ func newServer() *mcp.Server {
 	return server
 }
 
-// handleReadFile 移植 fs_server.ts 的 readFileTool。
+// handleReadFile 移植 fs_server.ts 的 readFileTool。读型工具审计尽力而为:
+// 失败仅留 stderr 线索,不改变工具结果。
 func handleReadFile(_ context.Context, _ *mcp.CallToolRequest, in readFileIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := readFileResult(in)
+	_ = recordAudit("read_file", outcome, map[string]any{"path": in.Path}, cause)
+	return res, nil, nil
+}
+
+func readFileResult(in readFileIn) (*mcp.CallToolResult, string, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, false)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "denied", err
 	}
 	info, err := os.Stat(safePath)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
 	if info.IsDir() {
-		return toolError(fmt.Errorf("Target is a directory, not a file: %s", in.Path)), nil, nil
+		e := fmt.Errorf("Target is a directory, not a file: %s", in.Path)
+		return toolError(e), "denied", e
 	}
 	data, err := os.ReadFile(safePath)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
-	return textResult(string(data)), nil, nil
+	return textResult(string(data)), "success", nil
 }
 
-// handleWriteFile 移植 fs_server.ts 的 writeFileTool。
+// handleWriteFile 移植 fs_server.ts 的 writeFileTool。变更型工具 fail-closed:
+// 审计未落链时操作效果未经合规确证,返回错误结果并明示禁止盲目重试。
+// args 只记 path 与字节数,文件内容一律不进链。
 func handleWriteFile(_ context.Context, _ *mcp.CallToolRequest, in writeFileIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := writeFileResult(in)
+	if err := recordAudit("write_file", outcome, map[string]any{"path": in.Path, "bytes": len(in.Content)}, cause); err != nil {
+		return auditBrokenResult("write_file", err), nil, nil
+	}
+	return res, nil, nil
+}
+
+func writeFileResult(in writeFileIn) (*mcp.CallToolResult, string, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, true)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "denied", err
 	}
 	if info, err := os.Stat(safePath); err == nil && info.IsDir() {
-		return toolError(fmt.Errorf("Target is a directory: %s", in.Path)), nil, nil
+		e := fmt.Errorf("Target is a directory: %s", in.Path)
+		return toolError(e), "denied", e
 	}
 	// 自动创建父目录;已存在或创建失败均如 ts 一样静默(对应其空 catch)。
 	mkdirParent(safePath)
 	if err := os.WriteFile(safePath, []byte(in.Content), 0o644); err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
 	// ts 的 content.length 是 UTF-16 码元数,Go 端显式复刻以保证消息逐字等价。
-	return textResult(fmt.Sprintf("Successfully wrote %d characters to %s", utf16Length(in.Content), in.Path)), nil, nil
+	return textResult(fmt.Sprintf("Successfully wrote %d characters to %s", utf16Length(in.Content), in.Path)), "success", nil
 }
 
 // handleListDir 移植 fs_server.ts 的 listDirTool:
 // 目录项名排序后以 JSON 数组(indent=2)作为文本返回(ts 的 JSON.stringify)。
 func handleListDir(_ context.Context, _ *mcp.CallToolRequest, in listDirIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := listDirResult(in)
+	_ = recordAudit("list_dir", outcome, map[string]any{"path": in.Path}, cause)
+	return res, nil, nil
+}
+
+func listDirResult(in listDirIn) (*mcp.CallToolResult, string, error) {
 	safePath, err := pathguard.ValidatePath(in.Path, false)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "denied", err
 	}
 	info, err := os.Stat(safePath)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
 	if !info.IsDir() {
-		return toolError(fmt.Errorf("Target is not a directory: %s", in.Path)), nil, nil
+		e := fmt.Errorf("Target is not a directory: %s", in.Path)
+		return toolError(e), "denied", e
 	}
 	dirEntries, err := os.ReadDir(safePath)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
 	names := make([]string, 0, len(dirEntries))
 	for _, e := range dirEntries {
@@ -223,26 +250,35 @@ func handleListDir(_ context.Context, _ *mcp.CallToolRequest, in listDirIn) (*mc
 	sort.Strings(names)
 	encoded, err := json.MarshalIndent(names, "", "  ")
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
-	return textResult(string(encoded)), nil, nil
+	return textResult(string(encoded)), "success", nil
 }
 
-// handleMoveFile 移植 fs_server.ts 的 moveFileTool。
+// handleMoveFile 移植 fs_server.ts 的 moveFileTool。变更型工具 fail-closed,
+// 语义同 handleWriteFile。
 func handleMoveFile(_ context.Context, _ *mcp.CallToolRequest, in moveFileIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := moveFileResult(in)
+	if err := recordAudit("move_file", outcome, map[string]any{"src": in.Src, "dst": in.Dst}, cause); err != nil {
+		return auditBrokenResult("move_file", err), nil, nil
+	}
+	return res, nil, nil
+}
+
+func moveFileResult(in moveFileIn) (*mcp.CallToolResult, string, error) {
 	safeSrc, err := pathguard.ValidatePath(in.Src, true)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "denied", err
 	}
 	safeDst, err := pathguard.ValidatePath(in.Dst, true)
 	if err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "denied", err
 	}
 	mkdirParent(safeDst)
 	if err := os.Rename(safeSrc, safeDst); err != nil {
-		return toolError(err), nil, nil
+		return toolError(err), "error", err
 	}
-	return textResult(fmt.Sprintf("Successfully moved %s to %s", in.Src, in.Dst)), nil, nil
+	return textResult(fmt.Sprintf("Successfully moved %s to %s", in.Src, in.Dst)), "success", nil
 }
 
 // mkdirParent 对应 ts 的 "取最后一个 '/' 之前的父目录并 mkdir -p、失败静默":

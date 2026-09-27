@@ -55,7 +55,10 @@ var queryProperties = []string{
 
 // unitNamePattern 是单元名白名单正则:仅字母/数字/下划线/点/@/-,天然排除
 // 路径分隔符、shell 元字符、空白与注入语法;".." 遍历由 normalizeUnitName 兜底。
-var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
+// 首字符类刻意排除 `-`:systemd 单元名语法上不存在前导中划线,而前导 `-`
+// 会被 `systemctl show <unit>` 解析成选项旗标——argv 注入面在源头即拒,
+// 合法名永不抵达 exec。
+var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$`)
 
 type serviceQueryIn struct {
 	Name string `json:"name"`
@@ -140,23 +143,32 @@ func newServer() *mcp.Server {
 	return server
 }
 
+// handleServiceQuery 是 service.query 的审计入口:验证拒绝 denied,
+// systemctl 故障与 not-found/masked error,其余 success。
 func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQueryIn) (*mcp.CallToolResult, any, error) {
+	res, outcome, cause := serviceQueryResult(ctx, in)
+	recordAudit("service.query", outcome, map[string]any{"name": in.Name}, cause)
+	return res, nil, nil
+}
+
+func serviceQueryResult(ctx context.Context, in serviceQueryIn) (*mcp.CallToolResult, string, error) {
 	const toolName = "service.query"
 
 	unit, err := normalizeUnitName(in.Name)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "denied", err
 	}
 	props, err := runSystemctlShow(ctx, unit)
 	if err != nil {
-		return raisedError(toolName, err), nil, nil
+		return raisedError(toolName, err), "error", err
 	}
 	// not-found 与 masked 两种 LoadState 皆以逐字文案拒绝。
 	if ls := props["LoadState"]; ls == "not-found" || ls == "masked" {
+		cause := fmt.Errorf("unit %s not found", unit)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("error: unit %s not found", unit)}},
 			IsError: true,
-		}, nil, nil
+		}, "error", cause
 	}
 	result := objectmodel.ServiceState{
 		Kind:         string(objectmodel.KindService),
@@ -168,7 +180,7 @@ func handleServiceQuery(ctx context.Context, _ *mcp.CallToolRequest, in serviceQ
 	// 成功观测 → state 记忆一条(Name=单元名,载荷=回包同一份 JSON);best-effort,
 	// 失败只落 stderr,不影响下面的工具返回值。
 	recordServiceState(unit, result)
-	return jsonResult(result), nil, nil
+	return jsonResult(result), "success", nil
 }
 
 // normalizeUnitName 校验单元名并补全隐式 .service 后缀。拒绝:空串、不匹配

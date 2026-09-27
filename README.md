@@ -1,6 +1,6 @@
 # daedalus-plugins — 6 个 Go 能力插件 monorepo
 
-四层结构(决策 23/24 + 25)中的**插件层**:6 个官方 Go 能力插件(capability,
+四层结构中的**插件层**:官方 Go 能力插件(capability,
 runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
 `daedalus-core/plugin/copilot/`,不在此仓。
 
@@ -62,7 +62,7 @@ fs/
 └── i18n/                     # locale 文件(如有)
 ```
 
-`blueprint/` 另有 `blueprints/` 数据目录(6 蓝图 × 6 文件,源码侧唯一事实源;
+`blueprint/` 另有 `blueprints/` 数据目录(6 蓝图 × 5 文件,源码侧唯一事实源;
 构建期经 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/`
 供 `//go:embed`,复制产物不入库)。
 
@@ -70,8 +70,9 @@ fs/
 
 插件仓不独立发布——发布以**主仓镜像构建**为出口,插件仓只演进源码:
 
-1. **改插件源码**(本仓 `cmd/` 或 manifest)→ 本仓 `go build ./...` + `go test ./...`
-   自检(依赖 SDK 经 `replace` 指向平级 `daedalus-sdk/`,3 仓须平级 clone);
+1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest)→ 逐 cap 独立模块
+   `cd <cap> && go build ./... && go test ./...` 自检(仓根无 go.mod;依赖 SDK 经
+   `replace` 指向平级 `daedalus-sdk/`,3 仓须平级 clone);
 2. **SDK 变更联动**:插件依赖的 SDK 包改动在 `daedalus-sdk/` 仓独立演进,
    插件仓经 `replace` 自动跟随本地 checkout;跨仓契约由
    `tests/deno/shellpolicy_contract.test.ts`(Go↔Deno)与各仓漂移测试钉住;
@@ -83,7 +84,7 @@ fs/
    systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind`
    ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
 5. **镜像出口**:主仓 `just build`(sync + podman build)→ 镜像内 7 插件
-   (copilot + 6 能力)全 ok 断言在 v3 构建机补跑(plan todo 18)。
+   (copilot + 6 能力)全 ok 断言在 v3 构建机补跑。
 
 **版本策略**:插件 manifest `version` 与 SDK 包版本各自演进;插件仓不产
 独立 release artifact,镜像即发布物。
@@ -91,7 +92,9 @@ fs/
 ## 开发与测试
 
 ```bash
-cd daedalus-plugins && go build ./... && go test ./...   # 6 插件全量
+for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do   # 9 模块全量
+    (cd "$cap" && go build ./... && go test ./...)
+done
 ```
 
 - 包内注释一律中文(仓库根 CONVENTIONS)。

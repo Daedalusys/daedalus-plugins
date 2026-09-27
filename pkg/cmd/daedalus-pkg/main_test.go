@@ -7,6 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,8 +17,23 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/pkgquery"
 )
+
+// TestMain 把审计链指向临时文件:测试直接驱动工具处理器,不指定落点会
+// 尝试写默认 /var/log 并产生无关警告噪声。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-pkg-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // fakeStep/scriptedRunner 提供与 internal 包测试同型的脚本化命令替身。
 type fakeStep struct {
@@ -184,7 +202,7 @@ func TestDnfQuery_EndToEnd_FallbackChain(t *testing.T) {
 	if want := "bash-doc-5.2.15-5.el9.noarch"; text != want {
 		t.Errorf("结果 = %q, want %q", text, want)
 	}
-	want := [][]string{{"rpm", "-q", "--info", "bash-doc"}, {"dnf", "repoquery", "--info", "bash-doc"}}
+	want := [][]string{{"rpm", "-q", "--info", "--", "bash-doc"}, {"dnf", "repoquery", "--info", "--", "bash-doc"}}
 	if !slices.EqualFunc(r.calls, want, slices.Equal) {
 		t.Errorf("调用序列 = %v, want %v", r.calls, want)
 	}
@@ -249,7 +267,7 @@ func TestDnfListInstalled_JSONTextShape(t *testing.T) {
 	if want := "[\n  \"bash-2\",\n  \"zsh-1\"\n]"; text != want {
 		t.Errorf("JSON 文本形态 = %q, want %q", text, want)
 	}
-	if !slices.Equal(r.calls[0], []string{"rpm", "-qa", "*"}) {
+	if !slices.Equal(r.calls[0], []string{"rpm", "-qa", "--", "*"}) {
 		t.Errorf("默认 pattern 未生效: %v", r.calls[0])
 	}
 }

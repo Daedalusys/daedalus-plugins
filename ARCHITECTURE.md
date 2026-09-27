@@ -39,10 +39,13 @@ daedalus.<cap>   (本仓 Go 静态二进制, runtime=native)
   五个子命令，负责发现、校验与构造启动命令。宿主**不是**任何 MCP server 的父进程、零 spawn，
   `run-plugin` 只打印命令，真正执行者是 systemd。
 - **审计面**: 规则上每次工具调用都应经 SDK `audit.LogAudit`（唯一合规写入口）落哈希链审计日志，
-  宿主操作同样写 `host_*` 条目，任何绕过该入口的直写都视为违规。**当前覆盖度**：本仓 9 个插件里
-  只有 `shell` 与 `blueprint` 写了工具级条目（`shell/cmd/daedalus-shell/main.go`、
-  `blueprint/cmd/daedalus-blueprint/apply_tool.go`），`trace` 只读回放链、其余 6 个插件的工具调用
-  尚不落链——补齐工作（各 cap 新增 `audit.go` 写入层）在独立 PR 中推进，落地后本段需同步。
+  宿主操作同样写 `host_*` 条目，任何绕过该入口的直写都视为违规。**当前覆盖度**：本仓 9 个插件的
+  每个工具都在 handler 的 choke point 经各自的 `recordAudit` 落**恰一条**工具级条目（写入层是各
+  cap 的 `cmd/daedalus-<cap>/audit.go`；`shell`/`pkg`/`sysinfo` 与 handler 同文件）。结局词表全仓
+  统一为 `success`/`denied`/`error`：入参、schema、白名单、令牌各校验门的拒绝同样落链记 `denied`，
+  只有纯只读、无拒绝门的插件（`sysinfo`）不会出现 `denied`；legacy `"ok"` 已退出词表。
+  `blueprint/cmd/daedalus-blueprint/audit_coverage_test.go` 按 `tools/list` 实际注册表守门——新增
+  工具若无审计归属，测试即失败；其余 cap 的同类守门待补。
 - **一次调用的生命周期**: `initialize` 握手协商协议版本 → 客户端发 `tools/list` 拉工具清单
   （与 manifest `tools[]` 一致）→ `tools/call` 携带 JSON schema 描述的结构化参数 → 服务器
   侧经 SDK 做策略与路径校验 → 执行并返回结果 → 同步写一条审计条目。全程无原始 shell
@@ -151,7 +154,7 @@ daedalus-plugins/
 │   └── i18n/                   # locale 文件（如有）
 ├── shell/  pkg/  sysinfo/  service/  ...   # 其余插件同构
 └── blueprint/
-    ├── blueprints/             # 蓝图数据（6 蓝图 × 6 文件，//go:embed 源）
+    ├── blueprints/             # 蓝图数据（6 蓝图 × 5 文件，//go:embed 源）
     └── cmd/daedalus-blueprint/blueprints/  # 构建期复制产物，不入库
 ```
 

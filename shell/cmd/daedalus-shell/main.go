@@ -274,14 +274,18 @@ func newAuditEntry(command string, args []string, allowed bool, returncode *int,
 }
 
 // recordAudit best-effort 追加一条哈希链审计条目(经 internal/audit.LogAudit,
-// O_CREATE|O_APPEND,写失败一律静默)。daedalus-shell 必须与其他身份共链,不能
-// 跳过 LogAudit 走简写 JSON。args 字段以 JSON 对象嵌入 audit.Entry.Args,
-// identity 固定 "daedalus-shell",tool 固定 "shell_exec";outcome 由 Allowed
-// 派生:允许执行 → "success",验证拒绝 → "denied"。
+// O_CREATE|O_APPEND,写失败落一行 stderr 警告,不阻塞工具结果)。daedalus-shell
+// 必须与其他身份共链,不能跳过 LogAudit 走简写 JSON。args 字段以 JSON 对象嵌入
+// audit.Entry.Args,identity 固定 "daedalus-shell",tool 固定 "shell_exec";
+// outcome 由条目内容派生:验证拒绝 → "denied",超时/无法启动等携带 Error 的
+// 运行期失败 → "error",其余 → "success"。
 func recordAudit(path string, entry auditEntry) {
 	outcome := "success"
-	if !entry.Allowed {
+	switch {
+	case !entry.Allowed:
 		outcome = "denied"
+	case entry.Error != nil:
+		outcome = "error"
 	}
 	// 用临时 struct 序列化保证字段顺序与键名稳定,再经 audit.ParseValue 解析为
 	// *audit.Value,由 LogAudit 走 sort_keys + ensure_ascii 规范化,字节级兼容
@@ -306,11 +310,14 @@ func recordAudit(path string, entry auditEntry) {
 	if err != nil {
 		argsVal = audit.NewObject() // 解析失败兜底空对象,不让审计阻塞 exec
 	}
-	_, _ = audit.LogAudit(audit.Entry{
+	if _, err := audit.LogAudit(audit.Entry{
 		Identity: "daedalus-shell",
 		Tool:     "shell_exec",
 		Args:     argsVal,
 		Outcome:  outcome,
 		LogPath:  path,
-	})
+	}); err != nil {
+		// 静默吞掉写入失败会让断链事故无痕可查,至少留一行 stderr 线索。
+		fmt.Fprintf(os.Stderr, "%s: 审计写入失败: %v\n", serverName, err)
+	}
 }

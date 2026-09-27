@@ -5,13 +5,32 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Daedalusys/daedalus-sdk/audit"
 )
+
+// TestMain 把审计链指向临时文件:五工具现在各自落一条审计条目,
+// 不指定落点会尝试写默认 /var/log 并产生无关警告噪声。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "daedalus-proc-audit-main-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建审计临时目录失败: %v\n", err)
+		os.Exit(1)
+	}
+	os.Setenv(audit.EnvLogPath, filepath.Join(dir, "audit.jsonl"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // connectSession 建立内存内 MCP 会话(同 cmd/daedalus-pkg 实证形态),
 // 并在测试结束时校验会话与服务器均干净退出。
