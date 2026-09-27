@@ -1,5 +1,5 @@
 ---
-# daedalus-plugins 仓 release 流水线:6 个 sub-module 各构建 + 打 *.plugin.zip 上传 GitHub release。
+# daedalus-plugins 仓 release 流水线:9 个 sub-module 各构建 + 打 *.plugin.zip 上传 GitHub release。
 # 跨仓 release 流程(镜像出口 / plugin-pack 配方)单一事实源见 AGENTS.md「跨仓 release 流程」段。
 #
 # 触发:推送 v* tag(正式发版)或 workflow_dispatch(手动,需填 tag input)。
@@ -101,20 +101,25 @@ jobs:
           done
           ls -la /tmp/release-zips/
 
-      - name: Create or update GitHub release with 6 zips
+      - name: Create or update GitHub release with 9 zips
         # release 已存在时(重跑)只上传资产(--clobber 覆盖),不存在时创建。
         # tag 来源:push v* → 自动取 tag;workflow_dispatch → 必须填 tag input。
         env:
           GH_TOKEN: ${{ github.token }}
+          # workflow 表达式必须先经 env 中转入 shell,不得直接内插进 run 脚本体:
+          # dispatch 的 tag input 是调用方可控值,内插等于给它执行任意命令的机会。
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
-          if [ -z "$TAG" ]; then
-            echo "ERROR: workflow_dispatch 必须提供 tag input(如 v0.2.0)" >&2
+          # tag 形态守门:只允许 vX.Y.Z(可带 -pre 后缀),挡住空白/换行/路径等 gh 参数注入形态。
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: tag 非法(应为 vX.Y.Z),got: [$TAG]" >&2
             exit 1
           fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -125,6 +130,6 @@ jobs:
             gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "daedalus-plugins $TAG" \
-              --notes "6 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint),供 daedalus-core 镜像构建经 fetch-plugins.sh / build.yml 拉取解压。"
+              --notes "9 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint/dupe/trace/proc)。其中 daedalus-core 镜像构建当前经 fetch-plugins.sh 只取前六个,dupe/trace/proc 随 release 分发但暂未进镜像。"
           fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
