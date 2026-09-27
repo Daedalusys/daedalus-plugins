@@ -12,8 +12,9 @@ package main
 //     30s 超时;stdout/stderr 不进 audit(防 secret 泄漏);
 //  7. reload:systemctl restart <ReloadService>,30s 超时;
 //  8. 失败逆序回滚:post_check 或 reload 失败 → 有旧文件恢复旧内容,否则删新文件;
-//  9. audit 写条目(tool="blueprint_apply", args 不含渲染内容, outcome=ok/error,
-//     写失败静默容忍,与 daedalus-tx 同纪律);
+//  9. audit 写条目(经 recordAudit 在 handleApply 这一唯一 choke point 落链:
+//     每次调用恰一条,九道拒绝门各记 denied、执行故障记 error、完成记 success;
+//     tool="blueprint_apply", args 不含渲染内容与令牌值);
 // 10. 返回 ApplyResult(tx_id="(v1-direct)",applied_at,config_path,post_check_ok,reload_ok)。
 //
 // 执行模型 v1-direct:不经 daedalus-tx 子命令链;post_check / reload 两个子进程
@@ -21,7 +22,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -32,7 +32,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
 	"github.com/Daedalusys/daedalus-sdk/shellpolicy"
 )
@@ -70,128 +69,146 @@ func registerApplyTool(server *mcp.Server, a *app) {
 	}, handleApply(a))
 }
 
+// handleApply 是 blueprint_apply 的审计 choke point:把判定逻辑交给
+// applyResult,自己只负责"每次调用恰记一条链"。审计写在最后一步之外——
+// 拒绝路径(plan/令牌/白名单任一关)同样是操作员需要回看的轨迹,漏记即
+// 等于给 agent 留了一条无痕试错通道。args 只带 name / plan_id / 成功或
+// 落盘后的 target,confirm_token 值与渲染内容(可能含 secret 引用)严禁进链。
 func handleApply(a *app) func(context.Context, *mcp.CallToolRequest, applyIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in applyIn) (*mcp.CallToolResult, any, error) {
-		plan, ok := a.plans.get(in.PlanID)
-		if !ok {
-			return toolErrorf("plan %q 不存在(先 blueprint_render)", in.PlanID), nil, nil
+		res, target, outcome, cause := applyResult(ctx, a, in)
+		args := map[string]any{"name": in.Name, "plan_id": in.PlanID}
+		if target != "" {
+			args["target"] = target
 		}
-
-		// 防串用:name 必须与 plan 记录的蓝图一致。
-		if plan.Name != in.Name {
-			return toolErrorf("plan %q 属于蓝图 %q,与入参 %q 不匹配", in.PlanID, plan.Name, in.Name), nil, nil
-		}
-
-		// confirm_token 校验(成功即消费,单次有效)。先比对用户提供的 token 与
-		// plan store 中 render 生成的真实 token(VerifyConfirmToken 只校验"非空/
-		// plan_id 匹配/未消费/未过期",不持有真实 token——配对语义必须由调用方先
-		// 比对 token 串)。
-		if plan.Token.Token == "" {
-			return toolErrorf("plan %q 无关联确认令牌(render 异常)", in.PlanID), nil, nil
-		}
-		if in.ConfirmToken != plan.Token.Token {
-			return toolErrorf("confirm_token 与 plan %q 不匹配", in.PlanID), nil, nil
-		}
-		if err := blueprint.VerifyConfirmToken(in.PlanID, blueprint.ConfirmToken{
-			Token:   in.ConfirmToken,
-			PlanID:  in.PlanID,
-			Expires: plan.Token.Expires,
-		}); err != nil {
-			return toolError(err), nil, nil
-		}
-
-		// 目标路径白名单(纵深防御,防 plan store 被篡改)。除词法前缀外,必须
-		// 解析符号链接确认真实路径仍在白名单内——否则 outputDirs 下若有指向
-		// /etc/shadow 等敏感文件的 symlink,词法校验通过但写入实际落到白名单外。
-		if !validateOutputPath(a.outputDirs, plan.Target) {
-			return toolErrorf("目标路径 %q 越出允许目录白名单", plan.Target), nil, nil
-		}
-		if err := validateOutputPathResolved(a.outputDirs, plan.Target); err != nil {
-			return toolError(err), nil, nil
-		}
-
-		cb, ok := a.reg.get(in.Name)
-		if !ok {
-			return toolErrorf("blueprint %q 不存在", in.Name), nil, nil
-		}
-
-		hadOld := false
-		var oldContent []byte
-		if data, err := os.ReadFile(plan.Target); err == nil {
-			hadOld = true
-			oldContent = data
-		}
-		if err := os.MkdirAll(filepath.Dir(plan.Target), 0o755); err != nil {
-			return toolErrorf("创建目标目录失败: %v", err), nil, nil
-		}
-		if err := os.WriteFile(plan.Target, []byte(plan.Rendered), 0o644); err != nil {
-			return toolErrorf("写入配置失败: %v", err), nil, nil
-		}
-
-		// rollback 闭包:失败时恢复旧快照或删除新文件。回滚本身的错误不能被
-		// `_ =` 吞掉——回滚失败必须回传给调用方,否则"配置已破坏但回滚也失败"
-		// 的灾难状态会静默通过。
-		var rollbackErr error
-		rollback := func() {
-			if hadOld {
-				if err := os.WriteFile(plan.Target, oldContent, 0o644); err != nil {
-					rollbackErr = fmt.Errorf("回滚恢复旧文件失败: %w", err)
-				}
-			} else {
-				if err := os.Remove(plan.Target); err != nil && !os.IsNotExist(err) {
-					rollbackErr = fmt.Errorf("回滚删除新文件失败: %w", err)
-				}
-			}
-		}
-
-		// post_check(脚本非空才执行)。params 经 plan.Params 传入,行内 {param}
-		// 占位符渲染;argv 直发(无 shell 求值)。
-		postCheckOK := true
-		if cb.postCheckCmd != "" {
-			if err := runPostCheck(ctx, a, cb.postCheckCmd, plan.Params); err != nil {
-				rollback()
-				writeBlueprintAudit("blueprint_apply", map[string]any{
-					"plan_id": in.PlanID, "name": in.Name, "target": plan.Target,
-				}, "error")
-				if rollbackErr != nil {
-					return toolErrorf("post_check 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr), nil, nil
-				}
-				return toolErrorf("post_check 失败(已回滚): %v", err), nil, nil
-			}
-		}
-
-		if err := runReload(ctx, a, cb.Blueprint.ReloadService); err != nil {
-			rollback()
-			writeBlueprintAudit("blueprint_apply", map[string]any{
-				"plan_id": in.PlanID, "name": in.Name, "target": plan.Target,
-			}, "error")
-			if rollbackErr != nil {
-				return toolErrorf("reload 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr), nil, nil
-			}
-			return toolErrorf("reload 失败(已回滚): %v", err), nil, nil
-		}
-
-		// 成功:为该 plan 生成 remove 确认令牌并回写 plan store(apply 是 remove
-		// 令牌的唯一生产点;remove 校验时比对 store 中的 RemoveToken),并同步
-		// 置位 Applied 标志供 handleRemove 判断"已应用"。
-		plan.RemoveToken = blueprint.GenerateConfirmToken("remove:" + in.Name)
-		plan.Applied = true
-		a.plans.put(in.PlanID, plan)
-
-		writeBlueprintAudit("blueprint_apply", map[string]any{
-			"plan_id": in.PlanID, "name": in.Name, "target": plan.Target,
-		}, "ok")
-
-		out := applyOut{
-			TxID:        "(v1-direct)",
-			AppliedAt:   time.Now().UTC().Format(time.RFC3339),
-			ConfigPath:  plan.Target,
-			PostCheckOK: postCheckOK,
-			ReloadOK:    true,
-			RemoveToken: plan.RemoveToken.Token,
-		}
-		return jsonResult(out), nil, nil
+		recordAudit("blueprint_apply", outcome, args, cause)
+		return res, nil, nil
 	}
+}
+
+// applyResult 判定一次 apply 的结局,返回 (工具结果, 已进入落盘流程的目标路径,
+// 结局 token, 失败因)。拒绝门一律 denied,写盘/post_check/reload/回滚故障为 error。
+func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, string, string, error) {
+	plan, ok := a.plans.get(in.PlanID)
+	if !ok {
+		err := fmt.Errorf("plan %q 不存在(先 blueprint_render)", in.PlanID)
+		return toolError(err), "", "denied", err
+	}
+
+	// 防串用:name 必须与 plan 记录的蓝图一致。
+	if plan.Name != in.Name {
+		err := fmt.Errorf("plan %q 属于蓝图 %q,与入参 %q 不匹配", in.PlanID, plan.Name, in.Name)
+		return toolError(err), "", "denied", err
+	}
+
+	// confirm_token 校验(成功即消费,单次有效)。先比对用户提供的 token 与
+	// plan store 中 render 生成的真实 token(VerifyConfirmToken 只校验"非空/
+	// plan_id 匹配/未消费/未过期",不持有真实 token——配对语义必须由调用方先
+	// 比对 token 串)。
+	if plan.Token.Token == "" {
+		err := fmt.Errorf("plan %q 无关联确认令牌(render 异常)", in.PlanID)
+		return toolError(err), "", "denied", err
+	}
+	if in.ConfirmToken != plan.Token.Token {
+		err := fmt.Errorf("confirm_token 与 plan %q 不匹配", in.PlanID)
+		return toolError(err), "", "denied", err
+	}
+	if err := blueprint.VerifyConfirmToken(in.PlanID, blueprint.ConfirmToken{
+		Token:   in.ConfirmToken,
+		PlanID:  in.PlanID,
+		Expires: plan.Token.Expires,
+	}); err != nil {
+		return toolError(err), "", "denied", err
+	}
+
+	// 目标路径白名单(纵深防御,防 plan store 被篡改)。除词法前缀外,必须
+	// 解析符号链接确认真实路径仍在白名单内——否则 outputDirs 下若有指向
+	// /etc/shadow 等敏感文件的 symlink,词法校验通过但写入实际落到白名单外。
+	if !validateOutputPath(a.outputDirs, plan.Target) {
+		err := fmt.Errorf("目标路径 %q 越出允许目录白名单", plan.Target)
+		return toolError(err), "", "denied", err
+	}
+	if err := validateOutputPathResolved(a.outputDirs, plan.Target); err != nil {
+		return toolError(err), "", "denied", err
+	}
+
+	cb, ok := a.reg.get(in.Name)
+	if !ok {
+		err := fmt.Errorf("blueprint %q 不存在", in.Name)
+		return toolError(err), "", "denied", err
+	}
+
+	hadOld := false
+	var oldContent []byte
+	if data, err := os.ReadFile(plan.Target); err == nil {
+		hadOld = true
+		oldContent = data
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.Target), 0o755); err != nil {
+		return toolErrorf("创建目标目录失败: %v", err), plan.Target, "error", err
+	}
+	if err := os.WriteFile(plan.Target, []byte(plan.Rendered), 0o644); err != nil {
+		return toolErrorf("写入配置失败: %v", err), plan.Target, "error", err
+	}
+
+	// rollback 闭包:失败时恢复旧快照或删除新文件。回滚本身的错误不能被
+	// `_ =` 吞掉——回滚失败必须回传给调用方,否则"配置已破坏但回滚也失败"
+	// 的灾难状态会静默通过。
+	var rollbackErr error
+	rollback := func() {
+		if hadOld {
+			if err := os.WriteFile(plan.Target, oldContent, 0o644); err != nil {
+				rollbackErr = fmt.Errorf("回滚恢复旧文件失败: %w", err)
+			}
+		} else {
+			if err := os.Remove(plan.Target); err != nil && !os.IsNotExist(err) {
+				rollbackErr = fmt.Errorf("回滚删除新文件失败: %w", err)
+			}
+		}
+	}
+
+	// post_check(脚本非空才执行)。params 经 plan.Params 传入,行内 {param}
+	// 占位符渲染;argv 直发(无 shell 求值)。
+	if cb.postCheckCmd != "" {
+		if err := runPostCheck(ctx, a, cb.postCheckCmd, plan.Params); err != nil {
+			rollback()
+			if rollbackErr != nil {
+				wrapped := fmt.Errorf("post_check 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr)
+				return toolError(wrapped), plan.Target, "error", wrapped
+			}
+			return toolErrorf("post_check 失败(已回滚): %v", err), plan.Target, "error", err
+		}
+	}
+
+	if err := runReload(ctx, a, cb.Blueprint.ReloadService); err != nil {
+		rollback()
+		if rollbackErr != nil {
+			wrapped := fmt.Errorf("reload 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr)
+			return toolError(wrapped), plan.Target, "error", wrapped
+		}
+		return toolErrorf("reload 失败(已回滚): %v", err), plan.Target, "error", err
+	}
+
+	// 成功:为该 plan 生成 remove 确认令牌并回写 plan store(apply 是 remove
+	// 令牌的唯一生产点;remove 校验时比对 store 中的 RemoveToken),并同步
+	// 置位 Applied 标志供 handleRemove 判断"已应用"。
+	plan.RemoveToken = blueprint.GenerateConfirmToken("remove:" + in.Name)
+	plan.Applied = true
+	a.plans.put(in.PlanID, plan)
+
+	out := applyOut{
+		TxID:        "(v1-direct)",
+		AppliedAt:   time.Now().UTC().Format(time.RFC3339),
+		ConfigPath:  plan.Target,
+		PostCheckOK: true,
+		ReloadOK:    true,
+		RemoveToken: plan.RemoveToken.Token,
+	}
+	res := jsonResult(out)
+	if res.IsError {
+		return res, plan.Target, "error", fmt.Errorf("序列化 apply 结果失败")
+	}
+	return res, plan.Target, "success", nil
 }
 
 // runPostCheck 执行蓝图 post_check 命令序列。
@@ -345,24 +362,4 @@ func validateOutputPathResolved(outputDirs []string, target string) error {
 		}
 	}
 	return fmt.Errorf("目标目录 %q 解析为 %q,越出允许目录白名单(符号链接逃逸被拒)", target, realParent)
-}
-
-// writeBlueprintAudit 追加一条蓝图工具审计条目(尽力而为:写失败静默忽略,
-// 与 daedalus-tx 的 hostAudit 同纪律)。args 绝不含渲染内容/secret 明文。
-func writeBlueprintAudit(tool string, args map[string]any, outcome string) {
-	data, err := json.Marshal(args)
-	if err != nil {
-		return
-	}
-	v, err := audit.ParseValue(string(data))
-	if err != nil {
-		v = audit.NewString(string(data))
-	}
-	_, _ = audit.LogAudit(audit.Entry{
-		Identity: blueprintIdentity,
-		Tool:     tool,
-		Args:     v,
-		Outcome:  outcome,
-		LogPath:  resolveAuditPath(),
-	})
 }

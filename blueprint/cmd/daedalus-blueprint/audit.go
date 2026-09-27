@@ -1,7 +1,8 @@
 // audit.go —— blueprint 的哈希链审计写入面。家族约定:helper 各服务器各持
 // 本地副本,不做跨插件共享;落点走 resolveAuditPath(env > 策略 [audit].log_path
-// > DefaultLogPath)。legacy 的 writeBlueprintAudit(apply/remove 完成条目)
-// 维持原样,新 choke point 审计统一用本文件的 recordAudit。
+// > DefaultLogPath)。六个工具的审计一律经本文件 recordAudit 在各自 handler 的
+// choke point 落链——工具逻辑只返回结局 token,不允许在分支里各自开写入口
+// (apply/remove 曾有的 legacy writeBlueprintAudit 就是漏记拒绝路径的根源)。
 package main
 
 import (
