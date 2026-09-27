@@ -9,7 +9,8 @@ daedalus-plugins 是 Daedalus 四层结构中的**插件层**，9 个 Go 能力�
 每个插件占一个子目录、一个独立 Go module（`module github.com/Daedalusys/daedalus-plugins/<cap>`），
 实现一个 capability server：以 Model Context Protocol (MCP) over stdio 暴露一组 tools，由宿主
 `daedalus-host` 发现与校验、systemd 按构建期渲染的 ExecStart 直接拉起。插件发布形态是 zip 归档
-（二进制 + manifest + SHA-256 checksums），随镜像发布，本仓只演进源码、不产独立 release。
+（二进制 + manifest + SHA-256 checksums），随镜像发布。`release.yml` 在 `v*` tag 上产各 cap 的
+`*.plugin.zip`，但那是给 `daedalus-core` 镜像构建供料的中间产物，本仓不据此独立发版。
 
 一次调用在整条链路上的走向：
 
@@ -37,8 +38,11 @@ daedalus.<cap>   (本仓 Go 静态二进制, runtime=native)
 - **宿主角色**: `daedalus-host` 提供 `list` / `inspect` / `verify` / `run-plugin` / `render-unit`
   五个子命令，负责发现、校验与构造启动命令。宿主**不是**任何 MCP server 的父进程、零 spawn，
   `run-plugin` 只打印命令，真正执行者是 systemd。
-- **审计面**: 每次工具调用经 `daedalus-sdk/audit` 落哈希链审计日志，宿主操作同样写 `host_*` 条目，
-  任何绕过该入口的写入都被视为违规。
+- **审计面**: 规则上每次工具调用都应经 SDK `audit.LogAudit`（唯一合规写入口）落哈希链审计日志，
+  宿主操作同样写 `host_*` 条目，任何绕过该入口的直写都视为违规。**当前覆盖度**：本仓 9 个插件里
+  只有 `shell` 与 `blueprint` 写了工具级条目（`shell/cmd/daedalus-shell/main.go`、
+  `blueprint/cmd/daedalus-blueprint/apply_tool.go`），`trace` 只读回放链、其余 6 个插件的工具调用
+  尚不落链——补齐工作（各 cap 新增 `audit.go` 写入层）在独立 PR 中推进，落地后本段需同步。
 - **一次调用的生命周期**: `initialize` 握手协商协议版本 → 客户端发 `tools/list` 拉工具清单
   （与 manifest `tools[]` 一致）→ `tools/call` 携带 JSON schema 描述的结构化参数 → 服务器
   侧经 SDK 做策略与路径校验 → 执行并返回结果 → 同步写一条审计条目。全程无原始 shell
@@ -137,7 +141,8 @@ Policy Level 为策略档位标记（R1 / R2），仅作分档参考；运行时
 
 ```
 daedalus-plugins/
-├── go.work                     # 聚合 9 个插件模块 (use .)
+├── AGENTS.md / README.md       # 仓级知识库与命名语义对照
+├── <cap>/go.work.example       # 每 cap 一份（本仓无根 go.mod / go.work，9 个模块各自独立）
 ├── fs/                         # daedalus.fs
 │   ├── daedalus.plugin.json    # manifest（唯一事实源，不含 checksums）
 │   ├── cmd/daedalus-fs/        # Go 源码：main.go + 工具实现 + *_test.go
@@ -146,7 +151,7 @@ daedalus-plugins/
 │   └── i18n/                   # locale 文件（如有）
 ├── shell/  pkg/  sysinfo/  service/  ...   # 其余插件同构
 └── blueprint/
-    ├── blueprints/             # 蓝图数据（6 蓝图 × 5 文件，//go:embed 源）
+    ├── blueprints/             # 蓝图数据（6 蓝图 × 6 文件，//go:embed 源）
     └── cmd/daedalus-blueprint/blueprints/  # 构建期复制产物，不入库
 ```
 
@@ -169,7 +174,7 @@ daedalus-plugins/
 | `dirs/` | state/tx 根路径统一解析链 | `service` |
 | `blueprint/` | 蓝图类型定义与 schema 校验 | `blueprint` |
 | `i18n/` | 国际化 locale 资源（Go 侧接线预留） | manifest `i18n` 声明 |
-| `audit/` | 哈希链审计写入（唯一合规入口） | 全部 9 个插件 |
+| `audit/` | 哈希链审计写入（唯一合规入口） | 工具级仅 `shell`, `blueprint`；`trace` 只读回放 |
 | `policy/` | `policy.toml` 严格加载（fail-closed） | `fs`, `shell`, `blueprint`, `dupe` |
 | `state/` | 追加式观测缓存（派生层，与审计分离） | `service` |
 | `version/` | 版本信息 | 全部 9 个插件 |
