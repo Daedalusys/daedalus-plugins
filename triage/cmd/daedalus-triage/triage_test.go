@@ -361,6 +361,34 @@ func TestCoredumpsList_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestCoredumpsList_NonArrayRejected(t *testing.T) {
+	// JSONL 形态（每行一个对象）不是 coredumpctl --json=short 的真实输出，
+	// 不允许再走"包成数组"的猜测性回退——必须给明确错误。
+	body := []byte("{\"pid\":1}\n{\"pid\":2}")
+	var calls []fakeRun
+	s := newServiceWith(makeScriptRunner(&calls, body, nil, ""))
+
+	got := s.CoredumpsList(context.Background())
+	if !strings.Contains(got.Note, "期望 JSON 数组") {
+		t.Fatalf("期望 note 含 '期望 JSON 数组'，实际 %q", got.Note)
+	}
+}
+
+func TestCoredumpsList_MultiLineArrayParsed(t *testing.T) {
+	// 多行美化数组（含换行）合法：合并后仍是一个 JSON 数组。
+	body := []byte("[\n{\"time\":1790688226932247,\"pid\":1,\"uid\":2,\"gid\":3,\"sig\":6,\"corefile\":\"present\",\"exe\":\"/x\",\"size\":9}\n]")
+	var calls []fakeRun
+	s := newServiceWith(makeScriptRunner(&calls, body, nil, ""))
+
+	got := s.CoredumpsList(context.Background())
+	if got.Note != "" {
+		t.Fatalf("多行数组应正常解析，实际 note=%q", got.Note)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].PID != 1 {
+		t.Fatalf("解析错误: %+v", got.Entries)
+	}
+}
+
 // ----- CoredumpInfo -----
 
 func TestCoredumpInfo_NormalParse(t *testing.T) {
@@ -439,7 +467,22 @@ func TestCoredumpInfo_RawTruncated(t *testing.T) {
 
 func TestCoredumpInfo_ValidationRejects(t *testing.T) {
 	s := newServiceWith(nil)
-	cases := []string{"", "0", "-1", "abc", "1.5", "999999999999999999999999999"}
+	// 既含类型非法（空/非数字/超范围/浮点），也含"形似但非 PID"——coredumpctl
+	// 本体接受进程名 / @时间戳 / 路径等匹配式，全部必须由 Validate 拒掉。
+	cases := []string{
+		"",         // 空
+		"0",        // 非正
+		"-1",       // 负号
+		"+1",       // 带符号（面非数字正）
+		" 1", "1 ", // 整号边界空白
+		"abc", "deno", // 进程名
+		"/usr/bin/deno",               // 可执行路径
+		"@1727000000000000",           // @时间戳形式
+		"1.5",                         // 浮点
+		"0x1",                         // 十六进制
+		"1e3",                         // 科学计数
+		"999999999999999999999999999", // 超 int32
+	}
 	for _, id := range cases {
 		if _, err := s.CoredumpInfo(context.Background(), id); err == nil {
 			t.Errorf("coredump_id %q 期望被拒绝", id)
@@ -462,6 +505,37 @@ func TestCtxDeadline_PrioritizedOverMainExit(t *testing.T) {
 	if !strings.Contains(got.Note, "context deadline exceeded") &&
 		!strings.Contains(got.Note, "调用失败") {
 		t.Logf("ctx 到期后返回 note: %q（路径依赖调度，可接受）", got.Note)
+	}
+}
+
+// ----- 真实子进程 stderr 回归（防 runCLI stderr 丢失）-----
+
+func TestRunCLI_RealStderrWrappedInError(t *testing.T) {
+	var got []string
+	// 真 runCLI + 真 sh 子进程：stderr 必须被裹进返回 err，否则诊断信息全丢。
+	err := runCLI(context.Background(), "/bin/sh", func(line []byte) bool {
+		got = append(got, string(line))
+		return true
+	}, "-c", "echo NO_COREDUMPS_STDERR 1>&2; exit 1")
+	if err == nil {
+		t.Fatal("期望非零退出返回 err")
+	}
+	if !strings.Contains(err.Error(), "NO_COREDUMPS_STDERR") {
+		t.Fatalf("err 应含 stderr 原文 NO_COREDUMPS_STDERR，实际 %q", err.Error())
+	}
+}
+
+func TestRunCLI_RealStderrNoMatchTriggersIsCoredumpsEmpty(t *testing.T) {
+	// coredumpctl 空集真实形态：rc=1 + stderr "No coredumps found."，必须
+	// 命中 isCoredumpsEmpty 的子串判断，走合法空集而非真错误路径。
+	err := runCLI(context.Background(), "/bin/sh", func([]byte) bool {
+		return true
+	}, "-c", "echo 'No coredumps found.' 1>&2; exit 1")
+	if err == nil {
+		t.Fatal("期望非零退出返回 err")
+	}
+	if !isCoredumpsEmpty(err) {
+		t.Fatalf("isCoredumpsEmpty 应为 true，实际 err=%q", err.Error())
 	}
 }
 

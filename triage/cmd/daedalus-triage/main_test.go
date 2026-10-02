@@ -141,11 +141,20 @@ func TestToolsE2E(t *testing.T) {
 }
 
 // TestCoredumpInfo_ValidationRejectedBySchema ID 非法时由 service.Validate
-// 拒绝,返回 isError=true 工具错误(不是 panic)。
+// 拒绝,返回 isError=true 工具错误(不是 panic)。覆盖 PID-only 边界:进程名
+// / 路径 / @时间戳等 coredumpctl 本体支持的匹配式也必须被拒。
 func TestCoredumpInfo_ValidationRejectedBySchema(t *testing.T) {
 	sess, ctx, _ := connectSession(t)
-	text, isErr := callTool(t, sess, ctx, "coredump_info", map[string]any{"coredump_id": "-1"})
-	if !isErr {
-		t.Fatalf("非法 ID 应返回 isError,实际 %q", text)
+	cases := []string{
+		"-1",
+		"deno",              // 进程名
+		"/usr/bin/deno",     // 可执行路径
+		"@1727000000000000", // @时间戳形式
+	}
+	for _, id := range cases {
+		text, isErr := callTool(t, sess, ctx, "coredump_info", map[string]any{"coredump_id": id})
+		if !isErr {
+			t.Errorf("coredump_id %q 应返回 isError,实际 %q", id, text)
+		}
 	}
 }
