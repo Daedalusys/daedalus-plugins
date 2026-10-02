@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -275,6 +276,33 @@ func TestQueryRealMissingBinary(t *testing.T) {
 	}
 }
 
+// TestQueryWireShapeEntriesEmptyArray Important #4 回归:Query 缺 binary 时
+// Entries 必须为 []JournalEntry{} 而非 nil,否则 json 编码为 "entries":null,
+// 与 Follow/LastBoot 的 "[]" 形态不一致,客户端解析踩空。
+func TestQueryWireShapeEntriesEmptyArray(t *testing.T) {
+	svc := &service{
+		followTimeout: journalFollowTimeout,
+		run: func(_ context.Context, _ func([]byte) bool, _ ...string) error {
+			return &fs.PathError{Op: "fork/exec", Path: journalctlBinary, Err: fs.ErrNotExist}
+		},
+	}
+	res, err := svc.Query(context.Background(), QueryArgs{Unit: ptrStr("foo.service")})
+	if err != nil {
+		t.Fatalf("缺 binary 应降级而非报错: %v", err)
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw["entries"]); got != "[]" {
+		t.Errorf(`缺 binary 时 entries 应为 [] 而非 null, got %s`, got)
+	}
+}
+
 // --- journal_follow(有界订阅)---
 
 // TestFollowBoundedByCount 条目上限先到:夹具供 1500 行,应在第 1000 条处触发
@@ -327,7 +355,7 @@ func TestFollowArgv(t *testing.T) {
 	if _, err := svc.Follow(context.Background(), FollowArgs{Unit: "sshd.service", Since: ptrStr("-1h")}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range [][2]string{{"--follow", ""}, {"-u", "sshd.service"}, {"--since=-1h", ""}} {
+	for _, want := range [][2]string{{"--follow", ""}, {"-n", "0"}, {"-u", "sshd.service"}, {"--since=-1h", ""}} {
 		if !hasArg(fr.args, want[0], want[1]) {
 			t.Errorf("argv 缺 %v: %v", want, fr.args)
 		}
@@ -380,12 +408,61 @@ func TestRealExecWrapsStderr(t *testing.T) {
 	}
 }
 
-// TestRealExecSilentExit1 journalctl 无匹配时以退出码 1 + 空 stderr 表示,
-// 不是故障:runJournalctl 必须返回 nil。
-func TestRealExecSilentExit1(t *testing.T) {
+// TestRealExecExit1NoStderrPropagates 退出码 1 + 空 stderr 一律上抛(r1 修复:
+// 删除"exit-1 = 无匹配"特例——journalctl 文档仅说"On success, 0; otherwise
+// non-zero",本机实测无匹配退 0,特例会掩盖真故障)。
+func TestRealExecExit1NoStderrPropagates(t *testing.T) {
 	writeFakeJournalctl(t, "#!/bin/sh\nexit 1\n")
-	if err := runJournalctl(context.Background(), func([]byte) bool { return true }, "-o", "json"); err != nil {
-		t.Errorf("静默退出码 1 应视为正常空结果, got %v", err)
+	err := runJournalctl(context.Background(), func([]byte) bool { return true }, "-o", "json")
+	if err == nil {
+		t.Fatal("exit 1 + 空 stderr 应上抛,不得静默吞成 nil(掩码 bug 回归)")
+	}
+	if isContextErr(err) {
+		t.Errorf("退出码 1 非 ctx 问题, got %v", err)
+	}
+}
+
+// TestRealExecExit2NoStderrPropagates 退出码 2 + 空 stderr(r1 修复前被掩码
+// bug 吞成 nil 的典型场景):必须上抛,且非 ctx 错误。
+func TestRealExecExit2NoStderrPropagates(t *testing.T) {
+	writeFakeJournalctl(t, "#!/bin/sh\nexit 2\n")
+	err := runJournalctl(context.Background(), func([]byte) bool { return true }, "-o", "json")
+	if err == nil {
+		t.Fatal("exit 2 + 空 stderr 应上抛,不得静默吞成 nil(掩码 bug 回归)")
+	}
+	if isContextErr(err) {
+		t.Errorf("退出码 2 非 ctx 问题, got %v", err)
+	}
+}
+
+// TestRealExecTimeoutReturnsCtxErr 真超时:脚本 sleep 5s,ctx 设 1s 超时。
+// r1 修复前 runJournalctl 内部吞掉 *ExitError{Exited:false} → 假绿;
+// 修复后必须返回 context.DeadlineExceeded,让调用方 errors.Is 可区分。
+func TestRealExecTimeoutReturnsCtxErr(t *testing.T) {
+	writeFakeJournalctl(t, "#!/bin/sh\nexec sleep 5\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	err := runJournalctl(ctx, func([]byte) bool { return true }, "-o", "json")
+	if err == nil {
+		t.Fatal("真超时应返回错误,不得假绿(旧掩码 bug)")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("超时应返回 context.DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestFollowRealTimeoutFollowsNote 真超时下 Follow 的"达到上限"note 必须
+// 非空(Important #3 回归):runJournalctl 在 execCtx 到期返回
+// DeadlineExceeded,Follow 命中 errors.Is 并补 note,不再是"死路"。
+func TestFollowRealTimeoutFollowsNote(t *testing.T) {
+	writeFakeJournalctl(t, "#!/bin/sh\nexec sleep 5\n")
+	svc := &service{run: runJournalctl, followTimeout: 300 * time.Millisecond}
+	res, err := svc.Follow(context.Background(), FollowArgs{Unit: "foo.service"})
+	if err != nil {
+		t.Fatalf("Follow 超时应收工而非报错: %v", err)
+	}
+	if strings.TrimSpace(res.Note) == "" {
+		t.Errorf("真超时 Follow 应补 note(达到上限), got note=%q", res.Note)
 	}
 }
 
@@ -404,6 +481,11 @@ func TestRealExecEarlyStop(t *testing.T) {
 	if n != 5 {
 		t.Errorf("回调次数=%d, want 5", n)
 	}
+}
+
+// isContextErr 判定错误是否为 ctx 超时/取消(用于区分"真退出码"与"ctx 到期")。
+func isContextErr(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // --- helpers ---
@@ -453,6 +535,3 @@ func pad6(n int) string {
 
 func ptrStr(s string) *string { return &s }
 func ptrInt(n int) *int       { return &n }
-
-// ensure errors import used even if some build tags trim tests.
-var _ = errors.Is
