@@ -106,10 +106,13 @@ func validateSmartTestKind(kind string) (string, error) {
 
 // --- 磁盘路径校验 ---
 
+// DiskDevicePatternString 是磁盘路径白名单正则的单一事实源:main.go 的 JSON
+// schema Pattern 与本文件的运行期校验共用同一字面量,避免两处副本静默漂移。
+const DiskDevicePatternString = `^/dev/(sd[a-z]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)(p?[0-9]+)?$`
+
 // diskDevicePattern 限定可接受的块设备命名。白名单外一律拒(md/loop/zram 等
 // 不在本批范围),避免把任意路径喂给 smartctl。
-var diskDevicePattern = regexp.MustCompile(
-	`^/dev/(sd[a-z]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)(p?[0-9]+)?$`)
+var diskDevicePattern = regexp.MustCompile(DiskDevicePatternString)
 
 // validateDiskPath 校验 disk 参数。即便 argv 直发(无 shell),"-注入"与
 // 空白拼接仍可能让 smartctl 把其后的 token 当选项;故显式拒绝 `..`、
@@ -163,24 +166,11 @@ func (e *execError) Error() string {
 func (e *execError) Unwrap() error { return e.Cause }
 
 // isMissingBinary 判定 err 是否源于外部可执行文件缺失/不可执行。
+// errors.Is 自动解包 *fs.PathError,无需手动 errors.As;fs.ErrPermission
+// 保留一次(不可执行亦降级 note,不 fatal)。
 func isMissingBinary(err error) bool {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return errors.Is(pe.Err, fs.ErrNotExist) || errors.Is(pe.Err, fs.ErrPermission) ||
-			errors.Is(pe.Err, fs.ErrInvalid) || errors.Is(pe.Err, fs.ErrPermission)
-	}
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound)
-}
-
-// mergeNotes 把多条 note 用 "; " 连接,空段剔除,返回 "" 当且仅当全部为空。
-func mergeNotes(notes ...string) string {
-	out := make([]string, 0, len(notes))
-	for _, n := range notes {
-		if n = strings.TrimSpace(n); n != "" {
-			out = append(out, n)
-		}
-	}
-	return strings.Join(out, "; ")
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) ||
+		errors.Is(err, fs.ErrInvalid) || errors.Is(err, exec.ErrNotFound)
 }
 
 // execHelper 以 argv 直发执行外部进程:逐行回传 stdout,失败包装为 execError
@@ -239,11 +229,6 @@ func execHelper(ctx context.Context, bin string, stdin io.Reader, onLine func([]
 		}
 	}
 	return nil
-}
-
-// runCLI 是 execHelper 的薄包装,统一返回逐行收集到的 stdout。
-func runCLI(ctx context.Context, bin string, stdin io.Reader, onLine func([]byte) bool, args ...string) error {
-	return execHelper(ctx, bin, stdin, onLine, args...)
 }
 
 // --- smartctl 退出码位语义 ---
@@ -316,9 +301,8 @@ func parseScanText(lines [][]byte) []Disk {
 		if raw == "" || strings.HasPrefix(raw, "#") {
 			continue
 		}
-		left, info, hasComment := strings.Cut(raw, "#")
+		left, info, _ := strings.Cut(raw, "#")
 		info = strings.TrimSpace(info)
-		_ = hasComment
 
 		fields := strings.Fields(strings.TrimSpace(left))
 		if len(fields) == 0 {

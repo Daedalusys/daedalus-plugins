@@ -36,7 +36,7 @@ var smartDiskSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"disk": {
 			Type:        "string",
-			Pattern:     `^/dev/(sd[a-z]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)(p?[0-9]+)?$`,
+			Pattern:     DiskDevicePatternString,
 			Description: "块设备绝对路径(白名单 sd/vd/hd/xvd/nvme/mmcblk;不接受 ..  / 注入 / 空白)。",
 		},
 	},

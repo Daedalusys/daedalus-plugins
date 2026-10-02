@@ -94,6 +94,20 @@ func TestSmartDiskSchema_Required(t *testing.T) {
 	}
 }
 
+// TestSmartDiskSchema_PatternPinnedToRuntimeRegex 钉住 schema 层 Pattern 与
+// 运行期校验正则来自同一事实源并保持逐字一致:只改一处即失败(防两门禁漂移)。
+func TestSmartDiskSchema_PatternPinnedToRuntimeRegex(t *testing.T) {
+	disk := smartDiskSchema.Properties["disk"]
+	if disk.Pattern != DiskDevicePatternString {
+		t.Errorf("schema Pattern 未与 DiskDevicePatternString 同步:\n schema  = %q\n runtime = %q",
+			disk.Pattern, DiskDevicePatternString)
+	}
+	if disk.Pattern != diskDevicePattern.String() {
+		t.Errorf("schema Pattern 未与 diskDevicePattern 编译结果同步:\n schema  = %q\n compiled = %q",
+			disk.Pattern, diskDevicePattern.String())
+	}
+}
+
 // TestSmartTestSchema_KindEnum kind 必须是 short|long 枚举。
 func TestSmartTestSchema_KindEnum(t *testing.T) {
 	if len(smartTestSchema.Required) != 1 || smartTestSchema.Required[0] != "disk" {
