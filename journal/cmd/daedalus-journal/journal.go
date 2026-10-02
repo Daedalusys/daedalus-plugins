@@ -28,8 +28,11 @@ import (
 var journalctlBinary = "/usr/bin/journalctl"
 
 const (
-	// journalctlTimeout 为单次 journalctl 调用的兜底超时;query/last_boot 直接
-	// 受它约束,follow 在此之上再叠加更短的可注入上限。
+	// journalctlTimeout 是 Query/LastBoot 调用方施加的兜底超时(在拼 argv 前
+	// 用 context.WithTimeout 派生 execCtx 再传给 run)。runJournalctl 本身
+	// 不再加超时——超时/取消完全由调用方 ctx 决定(避免与 Follow 的 followTimeout
+	// 双层叠加导致谁先到期不可区分),run 在 ctx 到期时优先返回 ctx.Err(),
+	// 调用方可 errors.Is 区分 DeadlineExceeded 与 Canceled。
 	journalctlTimeout = 30 * time.Second
 
 	// journalFollowTimeout 是 journal_follow 的墙钟上限;与条目上限二者先到
@@ -252,14 +255,20 @@ func (s *service) Query(ctx context.Context, args QueryArgs) (QueryResult, error
 	argv := []string{"-o", "json", "--no-pager", "-q", "-n", strconv.Itoa(limit)}
 	argv = appendFilterArgs(argv, args.Unit, args.Since, args.Until, args.Priority, args.Grep)
 
+	// runJournalctl 不再内部加超时,由调用方在此授予 30s 兜底上限。
+	execCtx, cancel := context.WithTimeout(ctx, journalctlTimeout)
+	defer cancel()
+
 	var lines [][]byte
-	err := s.run(ctx, func(line []byte) bool {
+	err := s.run(execCtx, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		return true
 	}, argv...)
 	if err != nil {
 		if isMissingBinary(err) {
-			return QueryResult{Note: "journalctl 不可用: " + err.Error()}, nil
+			// Entries 显式空切片:零值时 json 会编码为 "entries":null,与 Follow/
+			// LastBoot 的 "[]" 形态不一致,客户端解析会踩空。
+			return QueryResult{Entries: []JournalEntry{}, Note: "journalctl 不可用: " + err.Error()}, nil
 		}
 		return QueryResult{}, err
 	}
@@ -282,7 +291,11 @@ func (s *service) Follow(ctx context.Context, args FollowArgs) (FollowResult, er
 	execCtx, cancel := context.WithTimeout(ctx, s.followTimeout)
 	defer cancel()
 
-	argv := []string{"--follow", "-o", "json", "--no-pager", "-q"}
+	// -n 0:journalctl --follow 缺省会先回放最近 10 条再流式;此处加 -n 0 切到
+	// "严格 post-invocation" 语义,只跟随调用后产生的新条目,避免客户端把
+	// 调用前就已存在的条目当成"本次订阅产物"误读。30s 墙钟到点若无新条目
+	// 自然返回空集 + 上限 note(行为可预期)。
+	argv := []string{"--follow", "-n", "0", "-o", "json", "--no-pager", "-q"}
 	argv = appendFilterArgs(argv, &args.Unit, args.Since, args.Until, args.Priority, args.Grep)
 
 	entries := make([]JournalEntry, 0, journalFollowMaxEntries)
@@ -321,8 +334,12 @@ func (s *service) Follow(ctx context.Context, args FollowArgs) (FollowResult, er
 func (s *service) LastBoot(ctx context.Context) LastBootResult {
 	argv := []string{"-b", "-1", "-n", strconv.Itoa(journalLastBootLimit), "-o", "json", "--no-pager", "-q"}
 
+	// runJournalctl 不再内部加超时,由调用方在此授予 30s 兜底上限。
+	execCtx, cancel := context.WithTimeout(ctx, journalctlTimeout)
+	defer cancel()
+
 	var lines [][]byte
-	err := s.run(ctx, func(line []byte) bool {
+	err := s.run(execCtx, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		return true
 	}, argv...)
@@ -366,12 +383,21 @@ func isMissingBinary(err error) bool {
 // runJournalctl 以绝对路径 argv 直发执行 journalctl(绝不经过 sh -c),逐行
 // 把 stdout 回调给 onLine。cmd.Stdin 置空(→ /dev/null):服务器 stdin 是
 // JSON-RPC 帧流,子进程继承会吞掉未读协议数据。onLine 返回 false 时杀子进程
-// 并正常收工。静默退出码 1 + 空 stderr 是 journalctl "无匹配"语义,视为成功。
+// 并正常收工。
+//
+// 退出码语义(本函数为后续 5 个 CLI-fork 克隆的模板,纪律须钉死):
+//   - ctx 超时/取消:优先返回 ctx.Err()(DeadlineExceeded / Canceled),不当作
+//     真退出码处理——exec.CommandContext 在 ctx 到期时 SIGKILL 子进程,Wait
+//     返回的 *ExitError{Exited:false} 退出码语义不可用。
+//   - 任意非零退出:一律上抛(stderr wrap),不再吞"exit-1 + 空 stderr":
+//     journalctl 文档仅说"On success, 0; otherwise, non-zero",未承诺
+//     "无匹配 = exit 1",本机实测亦为 0。保留特例会掩盖 OOM kill 与真
+//     故障,与原始掩码 bug 同源,直接删除最安全。
+//   - run 内部不再加超时:避免与 Follow 的 followTimeout 双层叠加导致谁先
+//     到期不可区分;30s 兜底由 Query/LastBoot 调用方用 context.WithTimeout
+//     派生 execCtx 再传入(已是惯例)。
 func runJournalctl(ctx context.Context, onLine func([]byte) bool, args ...string) error {
-	execCtx, cancel := context.WithTimeout(ctx, journalctlTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(execCtx, journalctlBinary, args...)
+	cmd := exec.CommandContext(ctx, journalctlBinary, args...)
 	cmd.Stdin = nil
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -397,15 +423,15 @@ func runJournalctl(ctx context.Context, onLine func([]byte) bool, args ...string
 	scanErr := scanner.Err()
 	waitErr := cmd.Wait()
 
+	// ctx 到期优先:让调用方 errors.Is 能区分 DeadlineExceeded/Canceled,
+	// 而不是被 Wait 返回的 *ExitError{Exited:false} 误判为真失败。
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	if scanErr != nil {
 		return fmt.Errorf("journalctl 读取失败: %w", scanErr)
 	}
 	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) && stderr.Len() == 0 {
-			// 无匹配时 journalctl 以退出码 1 + 空 stderr 表示,不是故障。
-			return nil
-		}
 		return fmt.Errorf("journalctl 失败: %w(%s)", waitErr, strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -458,6 +484,10 @@ func rawToString(r json.RawMessage) string {
 		return ""
 	}
 	trimmed := bytes.TrimSpace(r)
+	// JSON null(以及空字节串)视为空值,显式短路避免落入下方去引号分支。
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var arr []int
 		if err := json.Unmarshal(trimmed, &arr); err == nil {

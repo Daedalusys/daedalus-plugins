@@ -115,7 +115,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "journal_follow",
-		Description: "有界订阅 journald 日志(journalctl --follow -o json)。\n\n持续跟随直到 1000 条或 30 秒上限先到,返回已收集批量(非持久订阅)。\n\n参数：\n    unit: systemd 单元名(必填)。\n    since/until/priority/grep: 同 journal_query(可选)。\n\n返回：\n    {\"entries\": [...], \"skipped_lines\": N, \"note\": \"...\"}。",
+		Description: "有界订阅 journald 日志(journalctl --follow -n 0 -o json)。\n\n只跟随调用后产生的新条目(-n 0,不回放历史):journalctl --follow 缺省会先回放最近 10 条再流式,此处显式 -n 0 切到严格 post-invocation 语义。\n\n持续跟随直到 1000 条或 30 秒上限先到,返回已收集批量(非持久订阅);到期无新条目则返回空集 + 上限 note。\n\n参数：\n    unit: systemd 单元名(必填)。\n    since/until/priority/grep: 同 journal_query(可选)。\n\n返回：\n    {\"entries\": [...], \"skipped_lines\": N, \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
