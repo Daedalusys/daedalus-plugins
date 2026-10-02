@@ -322,7 +322,7 @@ type vendorBundle struct {
 
 // collect 按 NVIDIA→AMD→Intel 顺序逐厂商探测并采集;probe 失败 → skipped 且
 // note 填"跳过该厂商"文案;CLI 失败按 handleVendorError 分流。
-func (s *service) collect(ctx context.Context, wantGPU int) ([]vendorBundle, error) {
+func (s *service) collect(ctx context.Context) ([]vendorBundle, error) {
 	targets := []struct {
 		vendor string
 		bin    string
@@ -348,7 +348,6 @@ func (s *service) collect(ctx context.Context, wantGPU int) ([]vendorBundle, err
 		}
 		out = append(out, b)
 	}
-	_ = wantGPU
 	return out, nil
 }
 
@@ -933,6 +932,9 @@ func mergeBundles(bundles []vendorBundle) (gpus []GPUInfo, procs []ProcessInfo, 
 			note = mergeNotes(note, b.note)
 		}
 		for _, g := range b.gpus {
+			// 稠密假设:offset 按厂商 GPU 条数累加(非 maxIndex+1)。NVIDIA
+			// nvidia-smi 的 index 列若稀疏(如 0/3 并存),厂商内序号保留
+			// 自身值仅整体平移,跨厂商不保证全局唯一(真机未验证)。
 			g.Index += offset[b.vendor]
 			gpus = append(gpus, g)
 		}
@@ -956,7 +958,7 @@ func mergeBundles(bundles []vendorBundle) (gpus []GPUInfo, procs []ProcessInfo, 
 
 // List 返回 gpu_list 结果(仅身份字段);全缺时 gpus=[] + note 声明可选依赖缺失。
 func (s *service) List(ctx context.Context) (GPUListResult, error) {
-	bundles, err := s.collect(ctx, -1)
+	bundles, err := s.collect(ctx)
 	if err != nil {
 		return GPUListResult{}, err
 	}
@@ -998,7 +1000,7 @@ func (s *service) Status(ctx context.Context, a gpuSelectArgs) (GPUStatusResult,
 	if err := a.Validate(); err != nil {
 		return GPUStatusResult{}, err
 	}
-	bundles, err := s.collect(ctx, -1)
+	bundles, err := s.collect(ctx)
 	if err != nil {
 		return GPUStatusResult{}, err
 	}
@@ -1020,19 +1022,23 @@ func (s *service) Status(ctx context.Context, a gpuSelectArgs) (GPUStatusResult,
 		}
 		gpus = filtered
 	}
+	// 空集合显式 [] 而非 nil,保证 wire 形态 "gpus":[] 与 gpu_list / gpu_processes
+	// / gpu_memory 一致(LLM 客户端可统一按数组迭代)。
 	if len(gpus) == 0 {
+		gpus = []GPUInfo{}
 		note = mergeNotes(note, "未探测到任何 GPU(可选依赖全缺失或无 GPU)")
 	}
 	return GPUStatusResult{GPUs: gpus, Note: note}, nil
 }
 
 // Processes 返回 gpu_processes 结果;gpu 非 nil 时只保留能映射到该 GPU 的
-// 进程(AMD/Intel 因 GPUIndices 为空 → 全部过滤掉,note 会写明)。
+// 进程(AMD/Intel 因 GPUIndices 为空 → 保守过滤掉,note 写明数量与原因,
+// 避免误以为"系统无 AMD/Intel 进程")。
 func (s *service) Processes(ctx context.Context, a gpuSelectArgs) (GPUProcessesResult, error) {
 	if err := a.Validate(); err != nil {
 		return GPUProcessesResult{}, err
 	}
-	bundles, err := s.collect(ctx, -1)
+	bundles, err := s.collect(ctx)
 	if err != nil {
 		return GPUProcessesResult{}, err
 	}
@@ -1045,7 +1051,15 @@ func (s *service) Processes(ctx context.Context, a gpuSelectArgs) (GPUProcessesR
 			return GPUProcessesResult{}, fmt.Errorf("gpu 索引不存在: %d(共 %d 张 GPU)", *a.GPU, len(gpus))
 		}
 		filtered := procs[:0:0]
+		// droppedUnmapped 统计 GPUIndices 为空的进程(AMD/Intel):无法判定是否占用
+		// *a.GPU,保守过滤,note 写明被过滤数量供 LLM 客户端理解"无 AMD/Intel 进程"
+		// 与"被过滤掉"是两种语义。
+		droppedUnmapped := 0
 		for _, p := range procs {
+			if len(p.GPUIndices) == 0 {
+				droppedUnmapped++
+				continue
+			}
 			for _, gi := range p.GPUIndices {
 				if gi == *a.GPU {
 					filtered = append(filtered, p)
@@ -1054,6 +1068,10 @@ func (s *service) Processes(ctx context.Context, a gpuSelectArgs) (GPUProcessesR
 			}
 		}
 		procs = filtered
+		if droppedUnmapped > 0 {
+			note = mergeNotes(note, fmt.Sprintf(
+				"指定 gpu=%d 时,AMD/Intel 等 %d 个进程未提供 GPU 索引,无法按索引匹配,已从结果中排除", *a.GPU, droppedUnmapped))
+		}
 	}
 	if procs == nil {
 		procs = []ProcessInfo{}
@@ -1066,7 +1084,7 @@ func (s *service) Memory(ctx context.Context, a gpuSelectArgs) (GPUMemoryResult,
 	if err := a.Validate(); err != nil {
 		return GPUMemoryResult{}, err
 	}
-	bundles, err := s.collect(ctx, -1)
+	bundles, err := s.collect(ctx)
 	if err != nil {
 		return GPUMemoryResult{}, err
 	}
