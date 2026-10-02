@@ -1,0 +1,36 @@
+{
+  "id": "daedalus.search",
+  "name": "Daedalus File Search",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-search",
+  "tools": [
+    "search_files",
+    "search_content",
+    "search_reindex"
+  ],
+  "permissions": {
+    "read": [
+      "/run/user",
+      "/var/run/user",
+      "$XDG_RUNTIME_DIR"
+    ],
+    "write": [],
+    "run": [
+      "/usr/bin/baloosearch",
+      "/usr/bin/baloosearch6",
+      "/usr/bin/balooctl",
+      "/usr/bin/balooctl6"
+    ]
+  },
+  "i18n": [
+    "en_US",
+    "zh_CN"
+  ]
+}
