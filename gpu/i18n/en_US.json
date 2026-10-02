@@ -1,0 +1,10 @@
+{
+  "tool.gpu_list.title": "List GPUs",
+  "tool.gpu_list.description": "Read-only listing of local GPUs (vendor / model / driver). Probes NVIDIA (nvidia-smi), AMD (rocm-smi), Intel (intel_gpu_top) in order; missing optional dependencies are skipped, and a fully-missing set returns an empty list with a note rather than an error.",
+  "tool.gpu_status.title": "GPU Status",
+  "tool.gpu_status.description": "Read-only GPU utilization / memory / temperature / power. Returns the full measurement set. Across vendors the same-named fields are NOT equivalent (NVIDIA=SM%, AMD=GFX%, Intel=Render/3D busy%; see tool description).",
+  "tool.gpu_processes.title": "GPU Processes",
+  "tool.gpu_processes.description": "Read-only listing of processes currently using a GPU (PID / name / VRAM). NVIDIA gives exact PID→GPU mapping; AMD rocm-smi --showpids gives count, not indices; Intel intel_gpu_top clients give engine busy%, not VRAM.",
+  "tool.gpu_memory.title": "GPU Memory",
+  "tool.gpu_memory.description": "Read-only per-GPU memory breakdown (total/used/free, MiB) plus processes mappable to that GPU. AMD units are bytes (B) internally divided by 1024²; Intel intel_gpu_top does not expose VRAM totals."
+}
