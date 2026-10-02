@@ -1,0 +1,10 @@
+{
+  "tool.smart_list.title": "列出 SMART 磁盘",
+  "tool.smart_list.description": "只读列出本机可被 smartctl 探测的块设备(name/type/info)。数据源 `smartctl --scan`,逐行解析为 {name, type, info}。smartmontools 未装时返回空集 + note,不报错。",
+  "tool.smart_health.title": "磁盘 SMART 健康",
+  "tool.smart_health.description": "只读返回指定磁盘的 SMART 健康状态(`smartctl -H`)。`passed` 是综合判定(文本状态 + 位掩码位 3)。`exit_bitmask` 是 smartctl 退出码原文——smartctl 7.x 退出码是位掩码,不是错误码;位 3 = DISK FAILING(权威健康信号),位 4 = prefail 属性触阈,位 6 = 设备错误日志有记录等。详见 `note` 人话翻译。",
+  "tool.smart_attributes.title": "磁盘 SMART 属性",
+  "tool.smart_attributes.description": "只读返回指定磁盘的 SMART 关键属性(`smartctl -A`):温度、累计上电小时、重映射扇区、pending 扇区、offline 不可修复,以及(NVMe 额外)可用备件、寿命消耗、介质/数据完整性错误、错误日志条目、通电次数、不安全断电次数。ATA 与 NVMe 都支持。",
+  "tool.smart_test.title": "SMART 自检",
+  "tool.smart_test.description": "SMART 自检状态占位。**L1 本批 deferred**:本工具**不触发任何磁盘 I/O**,返回 `started=false` + 说明 note。SMART 自检属 L1 操作,需 y/n 确认令牌(daedalus-tx/confirm_token)防误启;daedalus.smart 是只读观测插件,与该安全门冲突,需后续对接后启用。调用方**不应**假定磁盘已自检。"
+}
