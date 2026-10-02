@@ -49,7 +49,7 @@ var searchFilesSchema = &jsonschema.Schema{
 		},
 		"mimetype": {
 			Type:        "string",
-			Description: "可选 `type/subtype`(经 mime.ParseMediaType 严格校验)。",
+			Description: "可选 `type/subtype`(经 mime.ParseMediaType 严格校验);提供时作为 Baloo 查询语言 `type:` 前缀并入 query(无需 `file --mime-type` 额外 fork)。",
 		},
 		"since": {
 			Type:        "string",
@@ -133,7 +133,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "search_files",
-		Description: "只读文件搜索,基于 KDE Baloo 索引。会话 bus 上的 org.kde.baloo 不可达或 baloosearch 缺失时降级为空集 + note,不报错。参数形态:query(必填)、dir(可选绝对路径)、mimetype(可选 type/subtype)、since/until(可选 RFC3339)、size_min/size_max(可选字节数)。返回 {files:[{url,path,mimetype,size,mtime,rating}], count, note}。",
+		Description: "只读文件搜索,基于 KDE Baloo 索引。D-Bus 仅作 note 上下文(advisory),即便不可达也仍尝试 baloosearch fork(它直读 Baloo sqlite,不依赖 D-Bus);仅当 baloosearch 缺失或执行出错才返回空集 + note,不报错。参数形态:query(必填)、dir(可选绝对路径)、mimetype(可选 type/subtype,作为 Baloo `type:` 前缀并入查询)、since/until(可选 RFC3339)、size_min/size_max(可选字节数)。返回 {files:[{url,path,mimetype,size,mtime}], count, note}。",
 		InputSchema: searchFilesSchema,
 		Annotations: annotations,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
@@ -169,7 +169,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "search_content",
-		Description: "只读全文内容搜索,基于 Baloo 索引(需 Baloo 启用内容索引)。参数形态:query(必填,透传 Baloo 查询语言,支持 `content:` 前缀)、dir(可选绝对路径)。返回 {files:[{url,path}], count, note};Baloo 不可达或索引未启用时降级为空集 + note。",
+		Description: "只读全文内容搜索,基于 Baloo 索引(需 Baloo 启用内容索引)。同 search_files:D-Bus 仅 advisory,baloosearch fork 总是尝试。参数形态:query(必填,透传 Baloo 查询语言,支持 `content:` 前缀)、dir(可选绝对路径)。返回 {files:[{url,path}], count, note};仅当 baloosearch 缺失或执行出错才返回空集 + note。",
 		InputSchema: searchContentSchema,
 		Annotations: annotations,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {

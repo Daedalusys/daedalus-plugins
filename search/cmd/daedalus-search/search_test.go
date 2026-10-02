@@ -4,7 +4,8 @@
 // 覆盖:
 //   - 参数校验(query/dir/mimetype/since/until/size_min/size_max);
 //   - D-Bus 可达 + Baloo 注册 + 索引启用的正常搜索路径;
-//   - D-Bus 不可达 / Baloo 未注册 / 索引禁用 三条降级路径;
+//   - D-Bus 不可达 / Baloo 未注册 / 索引禁用 三条降级路径(advisory,不阻塞 fork);
+//   - mimetype 过滤通过 Baloo `type:` 前缀注入;
 //   - baloosearch 退出错误翻译(ExecError/D-Bus 错误);
 //   - search_reindex L1 deferred;
 //   - file:// URL 与路径互转、parseBalooPaths。
@@ -279,66 +280,82 @@ func TestSearchContent_NormalPath(t *testing.T) {
 
 // --- 降级路径 ---
 
-func TestSearchFiles_DBusUnreachable(t *testing.T) {
-	svc, fr := newFakeService()
+func TestSearchFiles_DBusUnreachable_StillForks(t *testing.T) {
+	// D-Bus 仅 advisory:不可达不阻塞 baloosearch fork,仍尝试查询。
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, fr := newFakeService(fakeResult{lines: lines(f)})
 	svc.connect = func() (balooDBus, error) { return nil, errors.New("no session bus") }
 	res, err := svc.SearchFiles(context.Background(), SearchFileArgs{Query: "q"})
 	if err != nil {
 		t.Fatalf("不可达不应致命: %v", err)
 	}
-	if len(res.Files) != 0 {
-		t.Errorf("应返回空集: %+v", res.Files)
+	if fr.calls != 1 {
+		t.Errorf("不可达仍应 fork baloosearch: calls=%d", fr.calls)
+	}
+	if len(res.Files) != 1 {
+		t.Errorf("应返回 1 条结果: %+v", res.Files)
 	}
 	if !strings.Contains(res.Note, "D-Bus session bus 不可达") {
-		t.Errorf("note = %q", res.Note)
-	}
-	if fr.calls != 0 {
-		t.Errorf("不可达不应 fork: calls=%d", fr.calls)
+		t.Errorf("note 应含 D-Bus advisory: %q", res.Note)
 	}
 }
 
-func TestSearchFiles_BalooNotRegistered(t *testing.T) {
-	svc, fr := newFakeService()
+func TestSearchFiles_BalooNotRegistered_StillForks(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, fr := newFakeService(fakeResult{lines: lines(f)})
 	svc.connect = func() (balooDBus, error) { return &fakeDBus{owned: false}, nil }
 	res, err := svc.SearchFiles(context.Background(), SearchFileArgs{Query: "q"})
 	if err != nil {
 		t.Fatalf("未注册不应致命: %v", err)
 	}
+	if fr.calls != 1 {
+		t.Errorf("未注册仍应 fork baloosearch: calls=%d", fr.calls)
+	}
 	if !strings.Contains(res.Note, "org.kde.baloo 未注册") {
 		t.Errorf("note = %q", res.Note)
 	}
-	if fr.calls != 0 {
-		t.Errorf("未注册不应 fork: calls=%d", fr.calls)
-	}
 }
 
-func TestSearchFiles_IndexingDisabled(t *testing.T) {
-	svc, fr := newFakeService()
+func TestSearchFiles_IndexingDisabled_StillForks(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, fr := newFakeService(fakeResult{lines: lines(f)})
 	svc.connect = func() (balooDBus, error) { return &fakeDBus{owned: true, indexing: false}, nil }
 	res, err := svc.SearchFiles(context.Background(), SearchFileArgs{Query: "q"})
 	if err != nil {
 		t.Fatalf("索引禁用不应致命: %v", err)
 	}
+	if fr.calls != 1 {
+		t.Errorf("索引禁用仍应 fork baloosearch: calls=%d", fr.calls)
+	}
 	if !strings.Contains(res.Note, "IndexingEnabled=false") {
 		t.Errorf("note = %q", res.Note)
 	}
-	if fr.calls != 0 {
-		t.Errorf("索引禁用不应 fork: calls=%d", fr.calls)
-	}
 }
 
-func TestSearchContent_DBusUnreachable(t *testing.T) {
-	svc, fr := newFakeService()
+func TestSearchContent_DBusUnreachable_StillForks(t *testing.T) {
+	svc, fr := newFakeService(fakeResult{lines: lines("/home/a.go")})
 	svc.connect = func() (balooDBus, error) { return nil, errors.New("no bus") }
 	res, err := svc.SearchContent(context.Background(), ContentSearchArgs{Query: "q"})
 	if err != nil {
 		t.Fatalf("不可达不应致命: %v", err)
 	}
-	if len(res.Files) != 0 || !strings.Contains(res.Note, "D-Bus") {
+	if len(res.Files) != 1 || !strings.Contains(res.Note, "D-Bus") {
 		t.Errorf("res = %+v", res)
 	}
-	if fr.calls != 0 {
-		t.Errorf("calls = %d", fr.calls)
+	if fr.calls != 1 {
+		t.Errorf("不可达仍应 fork: calls=%d", fr.calls)
 	}
 }
 
@@ -429,6 +446,144 @@ func TestSearchFiles_SizeRangeReversed(t *testing.T) {
 	}
 }
 
+func TestSearchFiles_SinceAfterUntil(t *testing.T) {
+	// 对称 size_min>size_max:since > until 拒绝,不 fork。
+	svc, fr := newFakeService()
+	_, err := svc.SearchFiles(context.Background(), SearchFileArgs{
+		Query: "q",
+		Since: "2024-12-31T00:00:00Z",
+		Until: "2024-01-01T00:00:00Z",
+	})
+	if err == nil {
+		t.Fatalf("since > until 应报错")
+	}
+	if !strings.Contains(err.Error(), "since=") || !strings.Contains(err.Error(), "until=") {
+		t.Errorf("错误应含 since/until: %v", err)
+	}
+	if fr.calls != 0 {
+		t.Errorf("不应 fork: calls=%d", fr.calls)
+	}
+}
+
+// --- mimetype 过滤:Baloo `type:` 前缀注入 ---
+
+func TestSearchFiles_MimetypeInjectedAsTypePrefix(t *testing.T) {
+	// mimetype 应作为 Baloo `type:` 前缀并入 query 末尾之前的部分。
+	svc, fr := newFakeService(fakeResult{lines: lines("")})
+	_, err := svc.SearchFiles(context.Background(), SearchFileArgs{
+		Query: "hello", Mimetype: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("SearchFiles: %v", err)
+	}
+	// argv 末项是 query,形态应为 `type:text/plain hello`。
+	last := fr.lastArg[len(fr.lastArg)-1]
+	if last != "type:text/plain hello" {
+		t.Errorf("argv 末项 = %q, want %q", last, "type:text/plain hello")
+	}
+}
+
+func TestSearchFiles_MimetypeAlreadyInQuery_NotOverridden(t *testing.T) {
+	// 若 query 自身已带 `type:` 前缀,用户显式优先,不二次注入。
+	svc, fr := newFakeService(fakeResult{lines: lines("")})
+	_, _ = svc.SearchFiles(context.Background(), SearchFileArgs{
+		Query: "type:image/png logo", Mimetype: "text/plain",
+	})
+	joined := strings.Join(fr.lastArg, " ")
+	if strings.Count(joined, "type:") != 1 {
+		t.Errorf("应仅 1 个 type: 前缀, got %v", fr.lastArg)
+	}
+	if !strings.Contains(joined, "type:image/png logo") {
+		t.Errorf("用户原始 type: 应保留: %v", fr.lastArg)
+	}
+}
+
+func TestSearchFiles_MimetypeAbsent_NoInjection(t *testing.T) {
+	// 未传 mimetype 时 query 不被改动。
+	svc, fr := newFakeService(fakeResult{lines: lines("")})
+	_, _ = svc.SearchFiles(context.Background(), SearchFileArgs{Query: "hello"})
+	last := fr.lastArg[len(fr.lastArg)-1]
+	if last != "hello" {
+		t.Errorf("argv 末项 = %q, want %q", last, "hello")
+	}
+}
+
+func TestSearchFiles_MimetypeFilledInHit(t *testing.T) {
+	// 当用户传 mimetype,FileHit.Mimetype 应被回填(无需 file --mime-type fork)。
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := newFakeService(fakeResult{lines: lines(f)})
+	res, err := svc.SearchFiles(context.Background(), SearchFileArgs{
+		Query: "x", Mimetype: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("SearchFiles: %v", err)
+	}
+	if len(res.Files) != 1 || res.Files[0].Mimetype != "text/plain" {
+		t.Errorf("FileHit.Mimetype 未回填: %+v", res.Files)
+	}
+}
+
+func TestSearchFiles_MimetypeAbsent_HitMimetypeEmpty(t *testing.T) {
+	// 未传 mimetype 时 FileHit.Mimetype 留空(避免无 file --mime-type 而瞎填)。
+	dir := t.TempDir()
+	f := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := newFakeService(fakeResult{lines: lines(f)})
+	res, _ := svc.SearchFiles(context.Background(), SearchFileArgs{Query: "x"})
+	if len(res.Files) != 1 || res.Files[0].Mimetype != "" {
+		t.Errorf("未传 mimetype 时 FileHit.Mimetype 应空: %+v", res.Files)
+	}
+}
+
+// --- baloosearch 解析:KF6 优先 ---
+
+func TestResolveBalooSearch_Baloosearch6Preferred(t *testing.T) {
+	// PATH 含 baloosearch6 + baloosearch,期望命中 baloosearch6(KF6 优先)。
+	dir := t.TempDir()
+	for _, name := range balooSearchCandidates {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	got := resolveBalooSearch()
+	want := filepath.Join(dir, "baloosearch6")
+	if got != want {
+		t.Errorf("应命中 baloosearch6, got %q want %q", got, want)
+	}
+}
+
+func TestResolveBalooSearch_BaloosearchFallback(t *testing.T) {
+	// PATH 仅 baloosearch(KF5 / 旧 Plasma),回落到它。
+	dir := t.TempDir()
+	p := filepath.Join(dir, "baloosearch")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	got := resolveBalooSearch()
+	if got != p {
+		t.Errorf("应命中 baloosearch, got %q want %q", got, p)
+	}
+}
+
+func TestResolveBalooSearch_DefaultPathFallback(t *testing.T) {
+	// PATH 空,走 defaultBalooSearchPaths 候选;若无候选存在,返首个绝对路径
+	//(让后续 translateBalooError 走 missing binary 路径,不 panic)。
+	t.Setenv("PATH", "")
+	got := resolveBalooSearch()
+	if got != defaultBalooSearchPaths[0] && got != defaultBalooSearchPaths[1] {
+		t.Errorf("默认路径应候选集内, got %q", got)
+	}
+}
+
 // --- reindex L1 deferred ---
 
 func TestReindex_L1Deferred(t *testing.T) {
@@ -458,8 +613,36 @@ func TestReindex_BalooUnavailableNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
-	if !strings.Contains(res.Note, "Baloo 不可用") {
-		t.Errorf("note = %q", res.Note)
+	if !strings.Contains(res.Note, "D-Bus session bus 不可达") {
+		t.Errorf("connect 失败 note 应含 D-Bus 不可达, got %q", res.Note)
+	}
+}
+
+func TestReindex_NameHasOwnerErrorNote(t *testing.T) {
+	// NameHasOwner 失败 ≠ connect 失败:note 应说"属性/名字查询失败",不是
+	// "D-Bus 不可达"。
+	svc, _ := newFakeService()
+	svc.connect = func() (balooDBus, error) {
+		return &fakeDBus{owned: false, ownedErr: errors.New("query failed")}, nil
+	}
+	res, err := svc.Reindex(context.Background(), ReindexArgs{})
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if strings.Contains(res.Note, "D-Bus session bus 不可达") {
+		t.Errorf("NameHasOwner 失败不应误称 D-Bus 不可达: %q", res.Note)
+	}
+	if !strings.Contains(res.Note, "注册查询失败") {
+		t.Errorf("note 应含'注册查询失败': %q", res.Note)
+	}
+}
+
+func TestReindex_NotOwnedNote(t *testing.T) {
+	svc, _ := newFakeService()
+	svc.connect = func() (balooDBus, error) { return &fakeDBus{owned: false}, nil }
+	res, _ := svc.Reindex(context.Background(), ReindexArgs{})
+	if !strings.Contains(res.Note, "org.kde.baloo 未注册") {
+		t.Errorf("note 应含未注册: %q", res.Note)
 	}
 }
 

@@ -2,9 +2,11 @@
 // search_reindex L1 deferred 占位。
 //
 // Baloo 不提供 D-Bus 查询接口,真实查询走 baloosearch(链接 libKF6Baloo,
-// 直读 Baloo sqlite 索引);故用两条独立路径:D-Bus(godbus 探测可用性门禁)
-// 与 CLI(execHelper fork baloosearch,解析 stdout 后客户端侧二次过滤)。
-// search_reindex 恒返回 Started=false + note,不调 daemon、不动 daedalus-tx。
+// 直读 Baloo sqlite 索引,不经 D-Bus);D-Bus 客户端仅作"上下文快照",不
+// 作为 fork 门禁——即便探测失败也仍尝试 baloosearch fork。Mimetype 过滤
+// 通过 Baloo 查询语言 `type:` 前缀并入 query,无需 `file --mime-type` 额外
+// fork。search_reindex 恒返回 Started=false + note,不调 daemon、不动
+// daedalus-tx。
 package main
 
 import (
@@ -29,8 +31,15 @@ import (
 // 也只走 sqlite 扫描,30s 充裕。
 const searchTimeout = 30 * time.Second
 
-// defaultBalooSearch 是找不到 baloosearch 时的兜底路径。
-const defaultBalooSearch = "/usr/bin/baloosearch"
+// balooSearchCandidates 是 baloosearch 二进制解析顺序:先 KF6 落点
+// (`baloosearch6`,Fedora KDE 装包名),再 KF5 落点(`baloosearch`,
+// Kubuntu 22.04 / 旧 Plasma)。resolveBalooSearch 按此顺序 LookPath,命中即
+// 返;全失败回退 defaultBalooSearchPaths[0](不依赖 PATH,沙箱启动可用)。
+var balooSearchCandidates = []string{"baloosearch6", "baloosearch"}
+
+// defaultBalooSearchPaths 是 baloosearch 默认路径候选(沙箱里通常无 PATH,
+// 走绝对路径直接 fork;两级落点同上)。
+var defaultBalooSearchPaths = []string{"/usr/bin/baloosearch6", "/usr/bin/baloosearch"}
 
 // defaultLimit 是单次查询的默认最大结果数;对齐 baloosearch -l 的语义。
 const defaultLimit = 200
@@ -38,9 +47,12 @@ const defaultLimit = 200
 // --- 载荷类型(对应 manifest tools 的 JSON schema)---
 
 // SearchFileArgs 是 search_files 的入参。
-//   - Query 必填,非空字符串;Baloo 查询语言元字符(`content:`/`filename:`)透传;
+//   - Query 必填,非空字符串;Baloo 查询语言元字符(`content:`/`filename:`/
+//     `type:`)透传;
 //   - Dir 可选,绝对路径,形态校验后作为 baloosearch -d 入参;
 //   - Mimetype 可选,须是合法 `type/subtype`(经 mime.ParseMediaType);
+//     若提供,作为 Baloo `type:` 前缀并入 query(无需 `file --mime-type` 额外
+//     fork);
 //   - Since/Until 可选,RFC3339 形态,客户端二次按文件 mtime 过滤;
 //   - SizeMin/SizeMax 可选,字节数(>=0),客户端二次按 stat 过滤。
 type SearchFileArgs struct {
@@ -54,15 +66,15 @@ type SearchFileArgs struct {
 }
 
 // FileHit 是 search_files 的单条结果。URL 是 Baloo 返的 file:// URL,
-// Path 是 URL 反归一化的本地绝对路径;Mimetype/Size/Mtime 由 stat 二次探查
-// 填入(若文件不可达则置零值)。
+// Path 是 URL 反归一化的本地绝对路径;Mimetype 来自用户传入的 mimetype 形参
+// (若未传则省略,避免无 `file --mime-type` fork 而瞎填);Size/Mtime 由 stat
+// 二次探查填入(若文件不可达则置零值)。
 type FileHit struct {
-	URL      string  `json:"url"`
-	Path     string  `json:"path"`
-	Mimetype string  `json:"mimetype,omitempty"`
-	Size     int64   `json:"size,omitempty"`
-	Mtime    string  `json:"mtime,omitempty"`
-	Rating   float64 `json:"rating,omitempty"`
+	URL      string `json:"url"`
+	Path     string `json:"path"`
+	Mimetype string `json:"mimetype,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	Mtime    string `json:"mtime,omitempty"`
 }
 
 // FileSearchResult 是 search_files 的返回。Files 永为非 nil 空切片
@@ -202,13 +214,37 @@ func validateSize(label string, v *int64) error {
 
 // --- baloosearch 路径解析 ---
 
-// resolveBalooSearch 用 exec.LookPath 定位 baloosearch,失败回退默认路径。
-// 仿 smart.resolveSmartctl 形态。
+// resolveBalooSearch 用 exec.LookPath 定位 baloosearch,优先 KF6 落点
+// (`baloosearch6`),再 KF5 落点(`baloosearch`);PATH 全空时回退绝对路径
+// 候选(沙箱启动可用)。仿 smart.resolveSmartctl 形态。
 func resolveBalooSearch() string {
-	if p, err := exec.LookPath("baloosearch"); err == nil && p != "" {
-		return p
+	for _, name := range balooSearchCandidates {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return p
+		}
 	}
-	return defaultBalooSearch
+	for _, p := range defaultBalooSearchPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// 沙箱里两条都缺,返首选绝对路径(后续 translateBalooError 会判 missing binary)
+	return defaultBalooSearchPaths[0]
+}
+
+// buildQueryWithMimetype 把 mimetype 过滤并入 Baloo 查询语言。Baloo 支持
+// `type:type/subtype` 前缀(与 `content:`/`filename:` 同级元字符),命中
+// 索引里的 mimetype 字段;无需 `file --mime-type` 额外 fork。若 query 自身
+// 已带 `type:` 前缀(经 TrimSpace 判断),用户显式优先,不做覆盖。
+func buildQueryWithMimetype(query, mimetype string) string {
+	mimetype = strings.TrimSpace(mimetype)
+	if mimetype == "" {
+		return query
+	}
+	if strings.HasPrefix(strings.TrimSpace(query), "type:") {
+		return query
+	}
+	return "type:" + mimetype + " " + query
 }
 
 // --- 可移植 CLI runner(对齐 smart/avc 家族)---
@@ -345,11 +381,15 @@ type balooDBus interface {
 	Close() error
 }
 
-// dBusAvailability 是探测结果快照(给 note 用)。
-type dBusAvailability struct {
-	reachable       bool
+// dBusSnapshot 是 D-Bus 探测结果快照,仅供 note 上下文,**不作 fork 门禁**:
+// connect 失败/NameHasOwner 失败/服务未注册/索引禁用皆不阻塞 baloosearch
+// fork(baloosearch 直读 Baloo sqlite,不依赖 D-Bus)。
+type dBusSnapshot struct {
+	connectErr      error
+	nameOwnerErr    error
 	nameOwned       bool
 	indexingEnabled bool
+	indexingErr     error
 }
 
 // service 持有 D-Bus 客户端 + baloosearch CLI runner。connect 与 run 都可注入;
@@ -383,28 +423,59 @@ func (s *service) runBalooSearch(ctx context.Context, args ...string) ([][]byte,
 	return lines, err
 }
 
-// probe 是 D-Bus 可用性探测:开连接、取 NameHasOwner、取 IndexingEnabled。
-// 任意一步失败都返回 (probe{}, err 或不可达 note),**不 panic**。
-func (s *service) probe() (balooDBus, dBusAvailability, error) {
+// probeAdvisory 探测 D-Bus 可用性作为 note 上下文。任一步失败都安全降级:
+// 连接失败 → connectErr;NameHasOwner 失败 → nameOwnerErr;IndexingEnabled
+// 失败 → indexingErr。**不 panic**,不阻塞后续 baloosearch fork。
+func (s *service) probeAdvisory() *dBusSnapshot {
 	conn, err := s.connect()
 	if err != nil {
-		return nil, dBusAvailability{}, err
+		return &dBusSnapshot{connectErr: err}
 	}
-	avail := dBusAvailability{reachable: true}
+	defer conn.Close()
+	snap := &dBusSnapshot{}
 	owned, err := conn.NameHasOwner("org.kde.baloo")
 	if err != nil {
-		_ = conn.Close()
-		return nil, avail, fmt.Errorf("查询 org.kde.baloo 是否注册失败: %w", err)
+		snap.nameOwnerErr = err
+		return snap
 	}
-	avail.nameOwned = owned
-	if owned {
-		if v, err := conn.IndexingEnabled(); err != nil {
-			avail.indexingEnabled = false
-		} else {
-			avail.indexingEnabled = v
+	snap.nameOwned = owned
+	if !owned {
+		return snap
+	}
+	v, err := conn.IndexingEnabled()
+	if err != nil {
+		snap.indexingErr = err
+		return snap
+	}
+	snap.indexingEnabled = v
+	return snap
+}
+
+// mergeNotes 把 baloosearch 执行 note 与 D-Bus 快照拼成最终 res.Note:
+//   - balooNote 反映 baloosearch fork 结果(missing binary / rc 错误);
+//   - dbusSnap 反映 Baloo 服务/索引状态(供 LLM 客户端参考,不阻塞 fork)。
+//
+// 两者均空 → 空串;其余按 "baloo; dbus" 顺序以 "; " 分隔。
+func mergeNotes(balooNote string, dbusSnap *dBusSnapshot) string {
+	var parts []string
+	if balooNote != "" {
+		parts = append(parts, balooNote)
+	}
+	if dbusSnap != nil {
+		switch {
+		case dbusSnap.connectErr != nil:
+			parts = append(parts, "D-Bus session bus 不可达")
+		case dbusSnap.nameOwnerErr != nil:
+			parts = append(parts, "org.kde.baloo 注册查询失败")
+		case !dbusSnap.nameOwned:
+			parts = append(parts, "org.kde.baloo 未注册")
+		case dbusSnap.indexingErr != nil:
+			parts = append(parts, "org.kde.baloo.main.IndexingEnabled 属性查询失败")
+		case !dbusSnap.indexingEnabled:
+			parts = append(parts, "org.kde.baloo.main.IndexingEnabled=false")
 		}
 	}
-	return conn, avail, nil
+	return strings.Join(parts, "; ")
 }
 
 // parseBalooPaths 把 baloosearch 的 stdout 逐行解析为 file:// URL。
@@ -494,14 +565,15 @@ func hitWithStat(u string, since, until *time.Time, sizeMin, sizeMax *int64) (Fi
 
 // SearchFiles search_files 工具实现。流程:
 //  1. 参数校验(query / dir / mimetype / since / until / size 范围);
-//  2. D-Bus probe → 失败/不可达 → 降级空集(不 panic);
-//  3. fork baloosearch 收集 stdout 路径;
-//  4. stat + 客户端侧过滤(mtime / size);按 defaultLimit 截断;
-//  5. 汇成 FileSearchResult。Note 字段透明记录降级原因。
+//  2. D-Bus 探测仅作 note 上下文(advisory),**不阻塞 fork**;
+//  3. 把 mimetype 过滤并入 query(Baloo `type:` 前缀);
+//  4. fork baloosearch 收集 stdout 路径;
+//  5. stat + 客户端侧过滤(mtime / size);Mimetype 字段按用户传入值回填;
+//  6. 按 defaultLimit 截断,汇成 FileSearchResult。Note 字段透明记录降级原因。
 //
-// Mimetype 过滤:不额外 fork `file --mime-type` 避免多余 exec;
-// Baloo 已在索引里带 mimetype,但 baloosearch stdout 不回传,故不做
-// 客户端二次过滤,mimetype 形参仅做形态校验后作为 note 提示。
+// D-Bus 是 advisory:即便 connect 失败或 org.kde.baloo 未注册,baloosearch
+// fork 仍尝试(它直读 Baloo sqlite,不依赖 D-Bus);仅当 baloosearch 也失败
+// (binary 缺失 / 真 stderr)才上抛错误。
 func (s *service) SearchFiles(ctx context.Context, args SearchFileArgs) (FileSearchResult, error) {
 	if err := validateSearchQuery(args.Query); err != nil {
 		return FileSearchResult{}, err
@@ -520,6 +592,10 @@ func (s *service) SearchFiles(ctx context.Context, args SearchFileArgs) (FileSea
 	if err != nil {
 		return FileSearchResult{}, err
 	}
+	if !since.IsZero() && !until.IsZero() && since.After(until) {
+		return FileSearchResult{}, fmt.Errorf("since=%s 晚于 until=%s",
+			since.Format(time.RFC3339), until.Format(time.RFC3339))
+	}
 	if err := validateSize("size_min", args.SizeMin); err != nil {
 		return FileSearchResult{}, err
 	}
@@ -531,43 +607,30 @@ func (s *service) SearchFiles(ctx context.Context, args SearchFileArgs) (FileSea
 	}
 
 	res := FileSearchResult{Files: []FileHit{}}
-
-	conn, avail, err := s.probe()
-	if conn != nil {
-		defer conn.Close()
-	}
-	if err != nil {
-		res.Note = fmt.Sprintf("D-Bus session bus 不可达,Baloo 不可用: %v", err)
-		return res, nil
-	}
-	if !avail.nameOwned {
-		res.Note = "Baloo D-Bus 服务 org.kde.baloo 未注册,Baloo 不可用"
-		return res, nil
-	}
-	if !avail.indexingEnabled {
-		res.Note = "Baloo org.kde.baloo.main.IndexingEnabled=false;索引未启用"
-		return res, nil
-	}
+	dbusSnap := s.probeAdvisory()
 
 	balArgs := []string{"-l", strconv.Itoa(defaultLimit)}
 	if args.Dir != "" {
 		balArgs = append(balArgs, "-d", args.Dir)
 	}
-	balArgs = append(balArgs, args.Query)
+	balArgs = append(balArgs, buildQueryWithMimetype(args.Query, args.Mimetype))
 	lines, runErr := s.runBalooSearch(ctx, balArgs...)
 	note, fatal := translateBalooError(runErr)
 	if fatal {
 		return FileSearchResult{}, fmt.Errorf("search_files 失败: %w", runErr)
 	}
-	if note != "" {
-		res.Note = note
-	}
+	res.Note = mergeNotes(note, dbusSnap)
 
 	urls := parseBalooPaths(lines)
 	for _, u := range urls {
 		h, keep := hitWithStat(u, &since, &until, args.SizeMin, args.SizeMax)
 		if !keep {
 			continue
+		}
+		// Mimetype 来自用户传入(已形态校验);未传则省略字段,避免无
+		// `file --mime-type` fork 而瞎填(查询语义由 Baloo `type:` 前缀保证)。
+		if args.Mimetype != "" {
+			h.Mimetype = args.Mimetype
 		}
 		res.Files = append(res.Files, h)
 		if len(res.Files) >= defaultLimit {
@@ -580,7 +643,10 @@ func (s *service) SearchFiles(ctx context.Context, args SearchFileArgs) (FileSea
 
 // SearchContent search_content 工具实现。流程与 SearchFiles 对称,但跳过
 // mtime/size 过滤(Baloo content 查询语义近"包含关系",与文件级过滤耦合即
-// 弱)。Note 透传降级原因。
+// 弱),且 content 查询不接 mimetype 形参(Baloo content 索引默认按 content:
+// 前缀,type: 限制与 content: 通常并存但语义冗余)。Note 透传降级原因。
+//
+// 同 SearchFiles:D-Bus 仅 advisory,baloosearch fork 总是尝试。
 func (s *service) SearchContent(ctx context.Context, args ContentSearchArgs) (ContentSearchResult, error) {
 	if err := validateSearchQuery(args.Query); err != nil {
 		return ContentSearchResult{}, err
@@ -589,23 +655,7 @@ func (s *service) SearchContent(ctx context.Context, args ContentSearchArgs) (Co
 		return ContentSearchResult{}, err
 	}
 	res := ContentSearchResult{Files: []ContentHit{}}
-
-	conn, avail, err := s.probe()
-	if conn != nil {
-		defer conn.Close()
-	}
-	if err != nil {
-		res.Note = fmt.Sprintf("D-Bus session bus 不可达,Baloo 不可用: %v", err)
-		return res, nil
-	}
-	if !avail.nameOwned {
-		res.Note = "Baloo D-Bus 服务 org.kde.baloo 未注册,Baloo 不可用"
-		return res, nil
-	}
-	if !avail.indexingEnabled {
-		res.Note = "Baloo 索引未启用(org.kde.baloo.main.IndexingEnabled=false),全文搜索不可用"
-		return res, nil
-	}
+	dbusSnap := s.probeAdvisory()
 
 	balArgs := []string{"-l", strconv.Itoa(defaultLimit)}
 	if args.Dir != "" {
@@ -617,9 +667,7 @@ func (s *service) SearchContent(ctx context.Context, args ContentSearchArgs) (Co
 	if fatal {
 		return ContentSearchResult{}, fmt.Errorf("search_content 失败: %w", runErr)
 	}
-	if note != "" {
-		res.Note = note
-	}
+	res.Note = mergeNotes(note, dbusSnap)
 
 	urls := parseBalooPaths(lines)
 	for _, u := range urls {
@@ -644,16 +692,18 @@ func (s *service) Reindex(_ context.Context, args ReindexArgs) (ReindexResult, e
 		return ReindexResult{}, err
 	}
 	note := "L1 deferred;重建索引需 y/n 确认令牌(daedalus-tx/confirm_token),当前未启用;未触发任何 Baloo/baloosearch/balooctl I/O"
-	// 顺带探测 Baloo 可用性(不 fork,仅 D-Bus),补充提示。
-	if conn, err := s.connect(); err == nil {
-		defer conn.Close()
-		if owned, err := conn.NameHasOwner("org.kde.baloo"); err == nil && !owned {
-			note = "L1 deferred + Baloo 不可用:org.kde.baloo 未注册"
-		} else if err != nil {
-			note = "L1 deferred + Baloo 不可用:D-Bus session bus 不可达"
-		}
+	// 顺带探测 Baloo 可用性(不 fork,仅 D-Bus),补充提示。note 语义须与
+	// 失败原因一一对应:connect 失败 = bus 不可达;NameHasOwner 失败 =
+	// 属性/名字查询失败(非 bus 不可达)。
+	if conn, err := s.connect(); err != nil {
+		note = "L1 deferred + Baloo 状态未知:D-Bus session bus 不可达"
 	} else {
-		note = "L1 deferred + Baloo 不可用:D-Bus session bus 不可达"
+		defer conn.Close()
+		if owned, err := conn.NameHasOwner("org.kde.baloo"); err != nil {
+			note = "L1 deferred + Baloo 状态未知:org.kde.baloo 注册查询失败"
+		} else if !owned {
+			note = "L1 deferred + Baloo 不可用:org.kde.baloo 未注册"
+		}
 	}
 	return ReindexResult{
 		Dir:     args.Dir,

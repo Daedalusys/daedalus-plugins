@@ -122,8 +122,8 @@ func TestHandshakeThreeTools(t *testing.T) {
 	}
 }
 
-// TestSearchFilesE2E_DBusUnavailable 端到端:connect 失败 → note 提示,
-// 不报错,files=[]。
+// TestSearchFilesE2E_DBusUnavailable 端到端:connect 失败 → D-Bus advisory note,
+// 仍尝试 baloosearch;测试用例默认 stub 无输出 → files=[] 但不报错。
 func TestSearchFilesE2E_DBusUnavailable(t *testing.T) {
 	sess, ctx, _ := testSession(t, nil)
 	out, isErr := callJSON[map[string]any](t, sess, ctx, "search_files", map[string]any{"query": "anything"})
@@ -136,6 +136,38 @@ func TestSearchFilesE2E_DBusUnavailable(t *testing.T) {
 	note, _ := out["note"].(string)
 	if !strings.Contains(note, "D-Bus session bus 不可达") {
 		t.Errorf("note = %q", note)
+	}
+}
+
+// TestSearchFilesE2E_DBusUnavailableBalooSearchWorks 端到端 fallback:D-Bus
+// 不可达但 baloosearch 能返回结果 → 应返回该结果(而非死等 D-Bus bail)。
+func TestSearchFilesE2E_DBusUnavailableBalooSearchWorks(t *testing.T) {
+	dir := t.TempDir()
+	f := dir + "/hit.txt"
+	_ = os.WriteFile(f, []byte("x"), 0o644)
+	var balooCalls int
+	sess, ctx, _ := testSession(t, func(s *service) {
+		s.connect = func() (balooDBus, error) { return nil, errTestNoBus }
+		s.run = func(_ context.Context, _ string, _ io.Reader, onLine func([]byte) bool, _ ...string) error {
+			balooCalls++
+			onLine([]byte(f))
+			return nil
+		}
+	})
+	out, isErr := callJSON[map[string]any](t, sess, ctx, "search_files", map[string]any{"query": "q"})
+	if isErr {
+		t.Errorf("fallback 不应报错")
+	}
+	if balooCalls != 1 {
+		t.Errorf("baloosearch 应尝试 1 次: %d", balooCalls)
+	}
+	files, _ := out["files"].([]any)
+	if len(files) != 1 {
+		t.Fatalf("应返回 1 条: %+v", out)
+	}
+	note, _ := out["note"].(string)
+	if !strings.Contains(note, "D-Bus session bus 不可达") {
+		t.Errorf("note 应含 D-Bus advisory: %q", note)
 	}
 }
 
