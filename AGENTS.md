@@ -5,10 +5,12 @@
 **Siblings:** `../daedalus-core/` (Daedalusys, runtime + image), `../daedalus-sdk/` (11 安全核心包)
 
 ## OVERVIEW
-Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。9 个 Go 能力插件
-(`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,
-另有 `dupe` / `trace` / `proc` 观测型插件尚未走 release 供料,均 `runtime=native`) 的 monorepo,
-独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
+Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。17 个 Go 能力插件
+(`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,另有
+`hwmon` / `journal` / `triage` / `integrity` / `avc` / `gpu` / `smart` / `search` 8 个
+L0 只读观测型插件;`dupe` / `trace` / `proc` 3 个观测型插件尚未走 release 供料;均
+`runtime=native`) 的 monorepo,独立仓根。**copilot 插件**(Deno) 留主仓
+`../daedalus-core/plugin/copilot/`,**不在此仓**。
 
 每个插件一个子目录、内含 `daedalus.plugin.json` (manifest) + `cmd/` (Go 源码) +
 `bin/` (构建产物,`just plugin-pack` 拷入,**不入库**)。各插件**独立 `go.mod`**
@@ -21,7 +23,7 @@ Daedalus 插件仓根 = 四层结构中的**插件层**(决策 23/24 + 25)。9 �
 ## STRUCTURE
 ```
 daedalus-plugins/
-├── go.work                          # 聚合 9 个插件模块 (use .)
+├── go.work                          # 聚合 17 个插件模块 (use .)
 ├── fs/                              # daedalus.fs  - 路径作用域文件读写
 │   ├── daedalus.plugin.json
 │   ├── cmd/daedalus-fs/             # Go 源码 (go-sdk stdio MCP 服务器)
@@ -33,6 +35,14 @@ daedalus-plugins/
 ├── pkg/                             # daedalus.pkg - dnf/rpm 只读查询
 ├── sysinfo/                         # daedalus.sysinfo - OS/hardware/network
 ├── service/                         # daedalus.service - systemd 单元只读观测
+├── avc/                             # daedalus.avc - SELinux AVC 拒访查询 (ausearch/audit2why/audit2allow)
+├── gpu/                             # daedalus.gpu - GPU 遥测 (nvidia-smi/rocm-smi/nvtop/intel_gpu_top)
+├── hwmon/                           # daedalus.hwmon - sysfs 传感器 (温度/风扇/电压/功率/电池/热区)
+├── integrity/                       # daedalus.integrity - rpm -V 完整性校验
+├── journal/                         # daedalus.journal - journalctl 查询/跟随/last-boot
+├── search/                          # daedalus.search - Baloo 文件/内容检索 + 索引重建
+├── smart/                           # daedalus.smart - 磁盘 SMART 健康
+├── triage/                          # daedalus.triage - 启动归因 + 崩溃记录
 └── blueprint/                       # daedalus.blueprint - 6 配置蓝图
     └── blueprints/                  # ★ 数据目录 (6 蓝图 × 6 文件; //go:embed 源)
         ├── nginx-vhost/
@@ -71,6 +81,14 @@ daedalus-plugins/
 | `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.disk-clean`) |
 | `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图 (L0, 游标分页) — **不是** 重放执行(那是 030 workflow),也不做链完整性校验(`daedalus-audit verify`) |
 | `proc/` | `daedalus.proc` | `proc_list` / `proc_tree` / `proc_fds` / `proc_listen` / `proc_cgroup` | —(直读 `/proc`) | 进程/fd/监听端口/cgroup 只读侦察 (L0, 零 exec) — **不是** 进程控制(kill/signal/renice 走 `daedalus-tx`) |
+| `hwmon/` | `daedalus.hwmon` | `hwmon_temperatures` / `hwmon_fans` / `hwmon_voltages` / `hwmon_power` / `hwmon_battery` / `hwmon_thermal_zones` | `pathguard` | `/sys/class/hwmon` 等 sysfs L0 只读传感器探测 (温度/风扇/电压/功率/电池/热区) — **不是** 硬件控制(write 路径一律 `NEVER`) |
+| `journal/` | `daedalus.journal` | `journal_query` / `journal_follow` / `journal_last_boot` | `version` | `journalctl` L0 只读查询/跟随/上次启动日志 (30s 超时,缺 CLI 优雅降级) — **不是** 日志写入(走 audit) |
+| `triage/` | `daedalus.triage` | `boot_blame` / `boot_critical_chain` / `last_boot_log` / `coredumps_list` / `coredump_info` | `version` | `systemd-analyze` / `coredumpctl` / `journalctl` L0 只读启动归因 + 关键链 + 崩溃记录 |
+| `integrity/` | `daedalus.integrity` | `rpm_verify` / `rpm_unchanged` / `rpm_summary` | `version` | `rpm -V` L0 只读完整性校验 (游标分页防 OOM,30s 超时) — **不是** 包修复(走 `daedalus-tx package.set`) |
+| `avc/` | `daedalus.avc` | `avc_recent` / `avc_explain` / `avc_summary` | `version` | `ausearch` / `audit2why` / `audit2allow` L0 只读 SELinux AVC 拒访查询 + 解释摘要 |
+| `gpu/` | `daedalus.gpu` | `gpu_list` / `gpu_status` / `gpu_processes` / `gpu_memory` | `version` | `nvidia-smi` / `rocm-smi` / `nvtop` / `intel_gpu_top` L0 只读 GPU 遥测 (显卡/状态/进程/显存) — 缺 CLI 即优雅降级返回空集 |
+| `smart/` | `daedalus.smart` | `smart_list` / `smart_health` / `smart_attributes` / `smart_test` | `version` | `smartctl` L0 只读磁盘 SMART 健康 (设备/健康/属性/自检) — **不是** 写型自检触发(那是 `--test=` 写) |
+| `search/` | `daedalus.search` | `search_files` / `search_content` / `search_reindex` | `version` | Baloo (`baloosearch*` / `balooctl*`) L0 文件/内容检索 + 索引重建 — D-Bus session-reachability spike 门禁,不可达即阻塞/降级 |
 
 ## 命名语义 (目录名 ≠ 系统组件,是"能力提供者")
 
@@ -90,7 +108,7 @@ daedalus-plugins/
 - **跨仓 dev 桥**: 各插件 `go.work.example` (`use ( . ../../daedalus-sdk )`) 是单仓 clone 兜底;三仓平级 clone 时以主仓 `../daedalus-core/go.work` 为准 — 它 `use` 全部 cap 并对 SDK 的两个 require 版本各钉一行 replace,workspace 级 replace 覆盖模块级,因此本地无需符号链接桥。
 - **不产独立 release**: 本仓只演进源码;镜像即发布物,经主仓 `just build` 出口。`bin/` 不入库,`just plugin-pack` 拷入。
 - **Blueprint 数据单一事实源**: `blueprint/blueprints/<id>/` 是唯一权威;主仓 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/` 供 `//go:embed`,**复制产物不入库**。
-- **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 4 个不写。`name="*"` 匹配所有资源。
+- **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 15 个不写。`name="*"` 匹配所有资源。
 - **i18n**: locale 文件在 `<cap>/i18n/<locale>.json` (POSIX 下划线命名);manifest 声明 `"i18n": ["en_US", "zh_CN"]` 数组,en_US 必定位兜底。
 - **禁止注释引用计划编号**: `todo N` / `决策 N` / `oracle review` / `round-N` 等进度信息写 commit message 或 `.omo/plans/`,不进源码注释。
 - **注释只写 why,不写 what**: 代码可自解释处不加注释。
@@ -106,7 +124,7 @@ daedalus-plugins/
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
 3. **打包**: 主仓 `just plugin-pack` → 构建全部 Go 二进制 → 同步到本仓各 `<cap>/bin/` → `daedalus-plugin-pack` 打 zip(注入逐条目 sha256 checksums + manifest 规范化自摘要)→ `-verify --keep` 解压到镜像树安装态;
 4. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
-5. **镜像出口**: 主仓 `just build` (sync + podman build) → 镜像内 7 插件(copilot + 6 能力)全 ok 断言在 v3 构建机补跑。
+5. **镜像出口**: 主仓 `just build` (sync + podman build) → 镜像内 15 插件(copilot + 14 能力,dupe/trace/proc 仅 TMPDIR 校验不入安装态)全 ok 断言在 v3 构建机补跑。
 
 ## ANTI-PATTERNS (THIS REPO)
 - **NEVER** 改插件目录名 / manifest `id` — 被 systemd 单元 / copilot 硬编码锁定;改名即破坏全链路,只能改 `name` 显示字段。
