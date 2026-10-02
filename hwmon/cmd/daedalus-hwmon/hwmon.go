@@ -34,7 +34,7 @@ const batteryRel = "class/power_supply/BAT0"
 // service 持有 sysfs 根与 RAPL 差分所需的进程内上一次读数基线。
 // 长驻 MCP 进程内跨工具调用持久;mu 保护基线以防并发调用竞争。
 type service struct {
-	root string
+	root string // canonicalRoot 固化的 realpath 绝对路径,readText 逃逸防线的基准
 	mu   sync.Mutex
 
 	haveRAPL     bool
@@ -43,8 +43,9 @@ type service struct {
 }
 
 // newService 以给定 sysfs 根装配 service(生产传 resolveRoot())。
+// root 立即规范化为绝对 realpath,作为后续读取的逃逸边界。
 func newService(root string) *service {
-	return &service{root: root}
+	return &service{root: canonicalRoot(root)}
 }
 
 // resolveRoot 解析 sysfs 根:DAEDALUS_HWMON_ROOT 优先,否则 /sys。
@@ -55,13 +56,47 @@ func resolveRoot() string {
 	return defaultSysRoot
 }
 
-// readText 读取 root 下 rel 文本并去除首尾空白。前缀校验是路径逃逸防线:
-// rel 含 ".." 时 filepath.Join 会归一化到 root 之外,此处显式拒绝。
+// canonicalRoot 把 root 规范化为 realpath(3) 语义:先转绝对路径,再解析
+// 符号链接,最后 Clean。目标不存在时保留 Abs+Clean,后续读取自然失败并
+// 优雅降级。这是 readText 两段逃逸防线的基准起点(后续 7 个 sysfs 克隆
+// 直接复用本函数)。
+func canonicalRoot(root string) string {
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	return filepath.Clean(root)
+}
+
+// underRoot 判定 p 在 root 之下(带路径分隔符边界,与 pathguard.TrimRight
+// 同语义:root="/" 时 base 为空,所有绝对路径视为在内)。
+func underRoot(root, p string) bool {
+	base := strings.TrimRight(root, string(os.PathSeparator))
+	return p == base || strings.HasPrefix(p, base+string(os.PathSeparator))
+}
+
+// readText 读取 root 下 rel 文本并去除首尾空白。逃逸防线两段(对齐
+// daedalus-sdk/pathguard 语义,但白名单仅 fs 域,sysfs 域由本包对称守门):
+//  1. rel含空字节即拒;filepath.Join 归一化后必须仍在 root 之下(拦
+//     ".." 词法逃逸);
+//  2. 目标 EvalSymlinks 后的 canonical 路径仍必须在 root 之下(拦指向
+//     root 外的符号链接,如恶意构造的 sysfs 桥)。
 func (s *service) readText(rel string) (string, error) {
-	root := filepath.Clean(s.root)
-	p := filepath.Join(root, rel)
-	if p != root && !strings.HasPrefix(p, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("hwmon: 路径逃逸根目录 %q: %q", root, rel)
+	if strings.ContainsRune(rel, 0) {
+		return "", fmt.Errorf("hwmon: 路径含空字节: %q", rel)
+	}
+	p := filepath.Join(s.root, rel)
+	if !underRoot(s.root, p) {
+		return "", fmt.Errorf("hwmon: 路径逃逸根目录 %q: %q", s.root, rel)
+	}
+	real := p
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		real = resolved
+	}
+	if !underRoot(s.root, real) {
+		return "", fmt.Errorf("hwmon: 符号链接逃逸根目录 %q: %q", s.root, rel)
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -72,6 +107,11 @@ func (s *service) readText(rel string) (string, error) {
 
 // subdirs 列出 root 下 rel 目录的直接子目录名(字典序,os.ReadDir 保证);
 // 不存在或不可读返回 nil,由调用方按空集处理。
+//
+// 子目录判定用 os.Stat(跟随符号链接)而非 DirEntry.IsDir():真实 sysfs 的
+// /sys/class/{hwmon,thermal,power_supply}/* 全是指向 /sys/devices/...
+// 的符号链接,DirEntry 的 lstat/d_type 语义下 IsDir 恒为 false,会把真机
+// 传感器全部漏掉;stat 语义则正确识别。
 func (s *service) subdirs(rel string) []string {
 	entries, err := os.ReadDir(filepath.Join(s.root, rel))
 	if err != nil {
@@ -79,7 +119,8 @@ func (s *service) subdirs(rel string) []string {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		info, err := os.Stat(filepath.Join(s.root, rel, e.Name()))
+		if err == nil && info.IsDir() {
 			names = append(names, e.Name())
 		}
 	}

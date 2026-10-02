@@ -5,6 +5,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -137,5 +138,73 @@ func TestRootPrefixGuard(t *testing.T) {
 	svc := newService(t.TempDir())
 	if _, err := svc.readText("../etc/passwd"); err == nil {
 		t.Fatal("../etc/passwd 应被前缀校验拒绝")
+	}
+}
+
+// TestSubdirsFollowsSymlinks 是 #19 review r1 的 Critical 回归钉子:真机
+// /sys/class/{hwmon,thermal,power_supply}/* 全是指向 /sys/devices/...
+// 的符号链接,DirEntry.IsDir 的 lstat/d_type 语义下恒为 false,会让
+// 4/6 工具(temperatures/fans/voltages/thermal_zones)静默返空。临时构造
+// 一个 hwmon 子目录用符号链接指向 root 之内的真实数据,断言 Temperatures()
+// 仍能读出(symlink 在 root 内合法,canonical 前缀校验放行)。
+func TestSubdirsFollowsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	// 真实数据放到 root/devices/... 下,类比 fixture 与真机 sysfs 布局
+	// (class/* 符号链接指向 devices/*,后者位于 root 之内)。
+	chip := filepath.Join(root, "devices", "fake", "hwmon0")
+	if err := os.MkdirAll(chip, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chip, "temp1_input"), []byte("48000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "class", "hwmon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../devices/fake/hwmon0", filepath.Join(root, "class", "hwmon", "hwmon0")); err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(root)
+	got := svc.Temperatures()
+	want := []temperature{{Label: "temp1", Celsius: 48.0}} // 无 *_label → 退化为输入文件名
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Temperatures = %+v\nwant %+v", got, want)
+	}
+}
+
+// TestReadTextSymlinkEscapeRejected 是 #19 review r1 的 Important 回归:
+// root 下指向 root 外的符号链接必须在 readText 的 canonical 前缀校验处被
+// 拒绝,不能跟随读取(root 启动时 canonicalRoot 已固化,每次读 EvalSymlinks
+// 再校验 —— 与 daedalus-sdk/pathguard 的 realpath 逃逸防线同语义)。
+func TestReadTextSymlinkEscapeRejected(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir() // root 之外的秘密目录
+	if err := os.WriteFile(filepath.Join(external, "secret"), []byte("topsecret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "class", "hwmon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "class", "hwmon", "evil")); err != nil {
+		t.Fatal(err)
+	}
+	svc := newService(root)
+	// readText 必须报逃逸错误,且绝不返回 secret 内容。
+	if _, err := svc.readText("class/hwmon/evil/secret"); err == nil {
+		t.Fatal("指向 root 外的符号链接应被 canonical 前缀校验拒绝")
+	}
+	// Temperatures 遍历 class/hwmon 时也会遇到 evil;subdirs(stat) 把它当
+	// 目录列出,但 glob 找不到 temp*_input 匹配项 → 空集,且不应泄露 secret。
+	if got := svc.Temperatures(); len(got) != 0 {
+		t.Fatalf("含逃逸符号链接的根,Temperatures 应为空: %+v", got)
+	}
+}
+
+// TestReadTextNullByteRejected:rel 含空字节(NUL)必须在 readText 入口即拒,
+// 与 daedalus-sdk/pathguard.ValidatePath 的"空字节即拒"语义对齐。
+func TestReadTextNullByteRejected(t *testing.T) {
+	svc := newService(t.TempDir())
+	if _, err := svc.readText("class\x00/hwmon/hwmon0/temp1_input"); err == nil {
+		t.Fatal("空字节路径应被拒绝")
 	}
 }
