@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ func loadFixture(t *testing.T, name string) string {
 // fakeRunner 是 execRunner 夹具:把 lines 逐行喂给 onLine;onLine 返回 false 时
 // 记录 aborted 并原地返回(模拟提前 kill 收工)。err 非 nil 时在 lines 喂完后
 // 返回(可能是 execError / fs.PathError,用于模拟退出码与缺失二进制)。
+// stdin 非 nil 时读到 f.stdin(校验 audit2why / audit2allow 拿到的事件记录)。
 type fakeRunner struct {
 	lines   [][]byte
 	err     error
@@ -53,22 +55,11 @@ type fakeRunner struct {
 	stdin   []byte
 }
 
-func (f *fakeRunner) run(_ context.Context, _ string, onLine func([]byte) bool, args ...string) error {
-	f.args = append([]string(nil), args...)
-	for _, line := range f.lines {
-		if !onLine(line) {
-			f.aborted = true
-			return nil
-		}
+func (f *fakeRunner) run(_ context.Context, _ string, stdin io.Reader, onLine func([]byte) bool, args ...string) error {
+	if stdin != nil {
+		b, _ := io.ReadAll(stdin)
+		f.stdin = append([]byte(nil), b...)
 	}
-	if f.err != nil {
-		return f.err
-	}
-	return nil
-}
-
-func (f *fakeRunner) runWithStdin(_ context.Context, _ string, stdin []byte, onLine func([]byte) bool, args ...string) error {
-	f.stdin = append([]byte(nil), stdin...)
 	f.args = append([]string(nil), args...)
 	for _, line := range f.lines {
 		if !onLine(line) {
@@ -85,7 +76,7 @@ func (f *fakeRunner) runWithStdin(_ context.Context, _ string, stdin []byte, onL
 // newFakeService 装配一个挂 fakeRunner 的 service(占位 runner = newService())。
 func newFakeService(lines ...[]byte) (*service, *fakeRunner) {
 	fr := &fakeRunner{lines: lines}
-	return &service{run: fr.run, runStdin: fr.runWithStdin, timeout: avcTimeout}, fr
+	return &service{run: fr.run, timeout: avcTimeout}, fr
 }
 
 // splitFixture 把 --format default 夹具按行拆分,模拟 stdout 逐行回传。
@@ -377,8 +368,7 @@ func TestExplain_FullPipeline(t *testing.T) {
 	// 三段管线:ausearch → audit2why → audit2allow --explain
 	svc, _ := newFakeService()
 	pipeline := runFakeExplainPipeline(record, whyOut, allowOut)
-	svc.run = pipeline.ausearch
-	svc.runStdin = pipeline.stdin
+	svc.run = pipeline.run
 
 	res, err := svc.Explain(context.Background(), ExplainArgs{EventID: "42"})
 	if err != nil {
@@ -417,15 +407,12 @@ func TestExplain_EventNotFound(t *testing.T) {
 // TestExplain_MissingAudit2Why audit2why 缺失 → Reason 降级 note,Suggestion 仍可填。
 func TestExplain_MissingAudit2Why(t *testing.T) {
 	svc, _ := newFakeService()
-	svc.run = func(ctx context.Context, bin string, onLine func([]byte) bool, args ...string) error {
+	svc.run = func(ctx context.Context, bin string, _ io.Reader, onLine func([]byte) bool, args ...string) error {
 		// ausearch 正常,audit2why 缺失
 		if strings.Contains(bin, "ausearch") {
 			onLine([]byte(`type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" scontext=u:r:t:s0 tcontext=u:object_r:tt:s0 tclass=file permissive=0`))
 			return nil
 		}
-		return &fs.PathError{Op: "exec", Path: audit2whyBinary, Err: fs.ErrNotExist}
-	}
-	svc.runStdin = func(ctx context.Context, bin string, stdin []byte, onLine func([]byte) bool, args ...string) error {
 		if strings.Contains(bin, "audit2why") {
 			return &fs.PathError{Op: "exec", Path: audit2whyBinary, Err: fs.ErrNotExist}
 		}
@@ -439,6 +426,121 @@ func TestExplain_MissingAudit2Why(t *testing.T) {
 	}
 	if !strings.Contains(res.Note, "audit2why") {
 		t.Errorf("Note 应说明 audit2why 缺失: %q", res.Note)
+	}
+}
+
+// TestEventSerial_BareID 纯数字输入原样返回。
+func TestEventSerial_BareID(t *testing.T) {
+	got, err := eventSerial("42")
+	if err != nil || got != "42" {
+		t.Errorf("eventSerial(\"42\")=%q,%v, want \"42\",nil", got, err)
+	}
+}
+
+// TestEventSerial_EpochColonSerial "epoch:serial" 必须剥成 serial 后段。
+func TestEventSerial_EpochColonSerial(t *testing.T) {
+	got, err := eventSerial("1699287200:42")
+	if err != nil || got != "42" {
+		t.Errorf("eventSerial(\"1699287200:42\")=%q,%v, want \"42\",nil", got, err)
+	}
+}
+
+// TestEventSerial_RejectsNonNumericTail 尾段非数字应被 eventSerial 直接拒绝
+// (防御性:即使 eventIDPattern 已先于 Validate 拒绝,eventSerial 自身仍要兜底)。
+func TestEventSerial_RejectsNonNumericTail(t *testing.T) {
+	if _, err := eventSerial("1699287200:abc"); err == nil {
+		t.Errorf("eventSerial 非数字尾段应拒绝")
+	}
+	if _, err := eventSerial(":"); err == nil {
+		t.Errorf("eventSerial 仅冒号应拒绝")
+	}
+	if err := (&ExplainArgs{EventID: "1699287200:abc"}).Validate(); err == nil {
+		t.Errorf("eventIDPattern 应拒绝非数字尾段")
+	}
+}
+
+// TestExplain_EventIDSerialNormalization "epoch:serial" → argv -a serial 段;
+// 不应静默搜 id=epoch。
+func TestExplain_EventIDSerialNormalization(t *testing.T) {
+	svc, _ := newFakeService()
+	// ausearch 喂一条记录让阶段 1 通过;audit2why/audit2allow 返回空即可。
+	// 用闭包捕获 ausearch 的 argv 供断言。
+	var ausearchArgs []string
+	svc.run = func(_ context.Context, bin string, _ io.Reader, onLine func([]byte) bool, args ...string) error {
+		if strings.Contains(bin, "ausearch") {
+			ausearchArgs = append([]string(nil), args...)
+			onLine([]byte(`type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" scontext=u:r:t:s0 tcontext=u:object_r:tt:s0 tclass=file permissive=0`))
+		}
+		return nil
+	}
+	if _, err := svc.Explain(context.Background(), ExplainArgs{EventID: "1699287200:42"}); err != nil {
+		t.Fatalf("Explain 失败: %v", err)
+	}
+	joined := strings.Join(ausearchArgs, " ")
+	if !strings.Contains(joined, "-a 42") {
+		t.Errorf("argv 应为 -a 42(剥 serial), got %v", ausearchArgs)
+	}
+	if strings.Contains(joined, "-a 1699287200:42") {
+		t.Errorf("argv 不得直喂 epoch:serial, got %v", ausearchArgs)
+	}
+}
+
+// TestExplain_BackendRc2DegradesWithNote I2:audit2why rc≥2 不得静默,也不得
+// 毁掉主结果——note 具名后端 + 错误,保留事件本体,第 3 段仍继续。
+func TestExplain_BackendRc2DegradesWithNote(t *testing.T) {
+	svc, _ := newFakeService()
+	svc.run = func(_ context.Context, bin string, _ io.Reader, onLine func([]byte) bool, _ ...string) error {
+		switch {
+		case strings.Contains(bin, "ausearch"):
+			onLine([]byte(`type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" scontext=u:r:t:s0 tcontext=u:object_r:tt:s0 tclass=file permissive=0`))
+			return nil
+		case strings.Contains(bin, "audit2why"):
+			return &execError{Code: 2, Stderr: "audit2why internal failure"}
+		default: // audit2allow 仍可用
+			onLine([]byte("allow u:r:t:s0 u:object_r:tt:s0:file read;"))
+			return nil
+		}
+	}
+	res, err := svc.Explain(context.Background(), ExplainArgs{EventID: "42"})
+	if err != nil {
+		t.Fatalf("可选后端 rc≥2 应降级不应报错: %v", err)
+	}
+	if !strings.Contains(res.Note, "audit2why") {
+		t.Errorf("note 应具名 audit2why, got %q", res.Note)
+	}
+	if res.Suggestion == "" {
+		t.Errorf("audit2why 失败不应阻断第 3 段, Suggestion 应保留")
+	}
+	if res.EventID != "42" {
+		t.Errorf("事件本体 EventID 应保留, got %q", res.EventID)
+	}
+}
+
+// TestExplain_BackendRc2SecondStage I2 对称:audit2allow rc≥2 具名降级,
+// audit2why 的 Reason 保留。
+func TestExplain_BackendRc2SecondStage(t *testing.T) {
+	svc, _ := newFakeService()
+	svc.run = func(_ context.Context, bin string, _ io.Reader, onLine func([]byte) bool, _ ...string) error {
+		switch {
+		case strings.Contains(bin, "ausearch"):
+			onLine([]byte(`type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" scontext=u:r:t:s0 tcontext=u:object_r:tt:s0 tclass=file permissive=0`))
+			return nil
+		case strings.Contains(bin, "audit2why"):
+			onLine([]byte("Was caused by: Missing type enforcement"))
+			return nil
+		default:
+			return &execError{Code: 2, Stderr: "audit2allow internal failure"}
+		}
+	}
+	res, err := svc.Explain(context.Background(), ExplainArgs{EventID: "42"})
+	if err != nil {
+		t.Fatalf("可选后端 rc≥2 应降级不应报错: %v", err)
+	}
+	if !strings.Contains(res.Note, "audit2allow") {
+		t.Errorf("note 应具名 audit2allow, got %q", res.Note)
+	}
+	if !strings.Contains(res.Reason, "Missing type enforcement") {
+		t.Errorf("audit2allow 失败不应抹掉 Reason: %q", res.Reason)
 	}
 }
 
@@ -599,6 +701,37 @@ func TestRunAusearch_RealMissingBinary(t *testing.T) {
 	}
 }
 
+// TestExecHelper_RealStdinFed 真 fork:execHelper 的 stdin 必须实喂给子进程
+// (audit2why / audit2allow 依赖 ausearch 记录经 stdin 传入);runCLI 包装则
+// 恒 nil stdin。
+func TestExecHelper_RealStdinFed(t *testing.T) {
+	path := writeFakeScript(t, "cat", "#!/bin/sh\ncat\n")
+	var got []string
+	if err := execHelper(context.Background(), path, strings.NewReader("type=AVC msg=audit(1:2)\n"), func(b []byte) bool {
+		got = append(got, string(b))
+		return true
+	}); err != nil {
+		t.Fatalf("execHelper 失败: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "type=AVC") {
+		t.Errorf("stdin 未被实喂给子进程, got %q", got)
+	}
+}
+
+// TestExecHelper_RealStdinStderr 真 fork:带 stdin 时 stderr 仍须在
+// cmd.Start() 前接好(承接 journal/integrity 教训),否则 execError.Stderr 恒空。
+func TestExecHelper_RealStdinStderr(t *testing.T) {
+	path := writeFakeScript(t, "audit2why", "#!/bin/sh\ncat >/dev/null\necho 'why failed' >&2\nexit 2\n")
+	got := execHelper(context.Background(), path, strings.NewReader("x\n"), func([]byte) bool { return true })
+	var ee *execError
+	if !errors.As(got, &ee) {
+		t.Fatalf("err 应为 *execError, got %T: %v", got, got)
+	}
+	if ee.Code != 2 || !strings.Contains(ee.Stderr, "why failed") {
+		t.Errorf("stdin 态 stderr 应被捕获, code=%d stderr=%q", ee.Code, ee.Stderr)
+	}
+}
+
 // --- handleExecError 语义收敛 ---
 
 // TestHandleExecError 分类 ausearch 的退出码与 stderr 模式。
@@ -630,6 +763,22 @@ func TestHandleExecError(t *testing.T) {
 				t.Errorf("不应产生 note, got %q", note)
 			}
 		})
+	}
+}
+
+// TestHandleExecError_AuditdWinsOverNoMatch 同现 "审计日志不可读" + "<no matches>"
+// 时,必须返回 auditd 不可用语义——后者掩盖前者会让运维错失更可行动的提示。
+func TestHandleExecError_AuditdWinsOverNoMatch(t *testing.T) {
+	err := &execError{Code: 1, Stderr: "Error opening /var/log/audit/audit.log (权限不够)\n<no matches>\n"}
+	note, fatal := handleExecError(err)
+	if fatal {
+		t.Fatalf("rc=1 不应 fatal")
+	}
+	if !strings.Contains(note, "auditd") && !strings.Contains(note, "审计") {
+		t.Errorf("note 应为 auditd 不可用语义, got %q", note)
+	}
+	if strings.Contains(note, "无匹配") {
+		t.Errorf("no-match 不得掩盖 auditd 不可用, got %q", note)
 	}
 }
 
@@ -670,11 +819,10 @@ type fakeExplainPipeline struct {
 	allowOut []string
 }
 
-func (p *fakeExplainPipeline) ausearch(_ context.Context, _ string, onLine func([]byte) bool, _ ...string) error {
-	return onLineLines(onLine, p.record)
-}
-
-func (p *fakeExplainPipeline) stdin(_ context.Context, bin string, _ []byte, onLine func([]byte) bool, _ ...string) error {
+func (p *fakeExplainPipeline) run(_ context.Context, bin string, _ io.Reader, onLine func([]byte) bool, _ ...string) error {
+	if strings.Contains(bin, "ausearch") {
+		return onLineLines(onLine, p.record)
+	}
 	if strings.Contains(bin, "audit2why") {
 		for _, l := range p.whyOut {
 			if !onLine([]byte(l)) {
