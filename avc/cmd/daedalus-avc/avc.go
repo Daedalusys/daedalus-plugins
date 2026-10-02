@@ -18,12 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -64,7 +64,8 @@ var sincePattern = regexp.MustCompile(`^(today|yesterday|now|recent|this-week|th
 
 // eventIDPattern 限定 audit event id 形态(ausearch -a 的合法形式)。实机
 // ausearch -a 只接纯数字序列号(如 "42");为了与 msg=audit(...) 的"epoch:serial"
-// 形态兼容(测试夹具中常见),允许冒号分隔的两段。
+// 形态兼容(测试夹具中常见),允许冒号分隔的两段。查询前必须经 eventSerial 剥成
+// 纯数字 serial,详见 eventSerial。
 var eventIDPattern = regexp.MustCompile(`^[0-9]+(:[0-9]+)?$`)
 
 // RecentArgs 是 avc_recent 的已校验入参:since 可选(ausearch -ts 字符串);
@@ -111,6 +112,27 @@ func (a *ExplainArgs) Validate() error {
 	return nil
 }
 
+// eventSerial 把 event_id 规范化为纯数字 serial。ausearch -a 内部以 strtoul
+// 只取数字段,若输入是 "epoch:serial" 直喂会静默搜 id=epoch 而非 serial,导致
+// <no matches> 与真实事件丢失上下文。
+//
+// eventIDPattern 已保证冒号分隔的两段都是纯数字,但保留防御性:Validate 之外的
+// 调用方若传入非数字尾段(例如 "169928:abc")仍在此处拒绝。
+func eventSerial(id string) (string, error) {
+	if i := strings.IndexByte(id, ':'); i >= 0 {
+		id = id[i+1:]
+	}
+	if id == "" {
+		return "", fmt.Errorf("event_id 尾段为空")
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("event_id 尾段必须为纯数字: %q", id)
+		}
+	}
+	return id, nil
+}
+
 // SummaryArgs 是 avc_summary 的入参:since 可选,limit 不接(返回桶集合,而非
 // 事件流)。
 type SummaryArgs struct {
@@ -148,8 +170,10 @@ type AVCEvent struct {
 }
 
 // RecentResult 是 avc_recent 的返回载荷:Events 是解析结果数组(空切片保证 wire
-// 是 "[]" 不是 "null"),TotalLines 是 ausearch stdout 收行数,Returned 是本次
-// 实际返回条数,Truncated 表示被分页截断,Note 承载截断/降级等人类可读说明。
+// 是 "[]" 不是 "null"),TotalLines 是**已解析事件数**(经 avcLineRegex 匹配
+// 成功的事件数,与 ausearch stdout 收行数区分——后者含 time->/空行/<no matches>
+// 等噪声),Returned 是本次实际返回条数,Truncated 表示被分页截断,Note 承载截断/
+// 降级等人类可读说明。
 type RecentResult struct {
 	Events     []AVCEvent `json:"events"`
 	TotalLines int        `json:"total_lines"`
@@ -240,24 +264,21 @@ func parseAvcEvents(lines [][]byte) []AVCEvent {
 
 // --- service / runner ---
 
-// execRunner 是外部 CLI 调用的注入点:逐行把 stdout 喂给 onLine,onLine 返回
-// false 时须中止子进程并正常收工。生产实现是 runCLI。
-type execRunner func(ctx context.Context, bin string, onLine func([]byte) bool, args ...string) error
-
-// stdinExecRunner 是带 stdin 的外部 CLI 调用注入点(用于 audit2why /
-// audit2allow < <event_record>)。生产实现是 stdinRunner。
-type stdinExecRunner func(ctx context.Context, bin string, stdin []byte, onLine func([]byte) bool, args ...string) error
+// execRunner 是外部 CLI 调用的注入点:stdin 二选一(nil 时子进程不接 stdin,
+// 非 nil 时以 reader 直喂,如 audit2why/audit2allow 接收 ausearch 提取的事件记录);
+// 逐行把 stdout 喂给 onLine,onLine 返回 false 时须中止子进程并正常收工。
+// 生产实现是 execHelper(统一 fork 实现)。
+type execRunner func(ctx context.Context, bin string, stdin io.Reader, onLine func([]byte) bool, args ...string) error
 
 // service 持有 CLI 调用器与调用方超时;测试以替身装配。
 type service struct {
-	run      execRunner
-	runStdin stdinExecRunner
-	timeout  time.Duration
+	run     execRunner
+	timeout time.Duration
 }
 
 // newService 装配生产 service:真 fork 三只 CLI,30s 超时上限。
 func newService() *service {
-	return &service{run: runCLI, runStdin: stdinRunner, timeout: avcTimeout}
+	return &service{run: execHelper, timeout: avcTimeout}
 }
 
 // Recent 执行 avc_recent:ausearch -m avc,user_avc --format default [+可选]
@@ -278,7 +299,7 @@ func (s *service) Recent(ctx context.Context, args RecentArgs) (RecentResult, er
 
 	var lines [][]byte
 	execNote := ""
-	err := s.run(execCtx, ausearchBinary, func(line []byte) bool {
+	err := s.run(execCtx, ausearchBinary, nil, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		return true
 	}, argv...)
@@ -319,9 +340,23 @@ func visibleEvents(in []AVCEvent, limit int) RecentResult {
 }
 
 // Explain 执行 avc_explain:三段管线——ausearch 拉原记录 → audit2why 解释
-// 原因 → audit2allow --explain 给建议规则。任何一段降级均不阻断其他段。
+// 原因 → audit2allow --explain 给建议规则。
+//
+// per-stage 退出码策略(与 handleExecError 的"全 rc≥2 上抛"区分):
+//   - 第 1 段 ausearch 是**主数据源**:rc≥2 / 非 *execError 上抛(与 Recent /
+//     Summary 一致,返回工具错误),rc=1 合法空集 / 日志不可读降级为空 body + note。
+//   - 第 2、3 段 audit2why / audit2allow 是**可选解释后端**:单后端失败(含
+//     rc≥2)一律优雅降级——note 明确写出哪个后端失败,保留事件本体与已收集
+//     字段(Reason/Suggestion/Confidence),并继续后续阶段;rc≥2 绝不静默无提示。
+//     这是"可选后端失败不毁掉 explain 主结果"的刻意分级,不是 rc≥2 统一上抛。
 func (s *service) Explain(ctx context.Context, args ExplainArgs) (Explanation, error) {
 	if err := args.Validate(); err != nil {
+		return Explanation{}, err
+	}
+	// event_id 规范化为纯数字 serial 再喂 -a(ausearch -a 用 strtoul 只取数字段,
+	// "epoch:serial" 直喂会静默搜 id=epoch 而非 serial)。
+	serial, err := eventSerial(args.EventID)
+	if err != nil {
 		return Explanation{}, err
 	}
 	execCtx, cancel := context.WithTimeout(ctx, s.timeout)
@@ -329,15 +364,15 @@ func (s *service) Explain(ctx context.Context, args ExplainArgs) (Explanation, e
 
 	res := Explanation{EventID: args.EventID}
 
-	// 第 1 段:拉原记录
+	// 第 1 段:拉原记录(主数据源,rc≥2 上抛)
 	var record bytes.Buffer
 	var lines [][]byte
-	err := s.run(execCtx, ausearchBinary, func(line []byte) bool {
+	err = s.run(execCtx, ausearchBinary, nil, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		record.Write(line)
 		record.WriteByte('\n')
 		return true
-	}, "-a", args.EventID, "-m", "avc,user_avc", "--format", "default")
+	}, "-a", serial, "-m", "avc,user_avc", "--format", "default")
 	if err != nil {
 		note, fatal := handleExecError(err)
 		if fatal {
@@ -356,20 +391,19 @@ func (s *service) Explain(ctx context.Context, args ExplainArgs) (Explanation, e
 		return Explanation{EventID: args.EventID, Note: "该 event_id 未匹配到 AVC/USER_AVC 事件"}, nil
 	}
 
-	// 第 2 段:audit2why 解释
+	// 第 2 段:audit2why 解释(可选后端,失败降级 + note 具名,不阻断第 3 段)
 	var whyBuf bytes.Buffer
-	whyErr := s.runStdin(execCtx, audit2whyBinary, record.Bytes(), func(line []byte) bool {
+	whyErr := s.run(execCtx, audit2whyBinary, bytes.NewReader(record.Bytes()), func(line []byte) bool {
 		whyBuf.Write(line)
 		whyBuf.WriteByte('\n')
 		return true
 	})
 	if whyErr != nil {
-		_, fatal := handleExecError(whyErr)
-		if fatal {
-			return Explanation{EventID: args.EventID, Note: "audit2why 调用失败: " + whyErr.Error()}, nil
-		}
 		if isMissingBinary(whyErr) {
 			res.Note = mergeNotes(res.Note, "audit2why 不可用: "+whyErr.Error())
+		} else {
+			// 含 rc≥2:优雅降级,但 note 记明后端 + 错误,不静默
+			res.Note = mergeNotes(res.Note, "audit2why 调用失败: "+whyErr.Error())
 		}
 	}
 	if whyBuf.Len() > 0 {
@@ -377,20 +411,19 @@ func (s *service) Explain(ctx context.Context, args ExplainArgs) (Explanation, e
 		res.Confidence = classifyReason(whyBuf.String())
 	}
 
-	// 第 3 段:audit2allow --explain 给建议
+	// 第 3 段:audit2allow --explain 给建议(可选后端,失败降级 + note 具名)
 	var allowBuf bytes.Buffer
-	allowErr := s.runStdin(execCtx, audit2allowBinary, record.Bytes(), func(line []byte) bool {
+	allowErr := s.run(execCtx, audit2allowBinary, bytes.NewReader(record.Bytes()), func(line []byte) bool {
 		allowBuf.Write(line)
 		allowBuf.WriteByte('\n')
 		return true
 	}, "--explain")
 	if allowErr != nil {
-		_, fatal := handleExecError(allowErr)
-		if fatal {
-			return Explanation{EventID: args.EventID, Note: "audit2allow 调用失败: " + allowErr.Error()}, nil
-		}
 		if isMissingBinary(allowErr) {
 			res.Note = mergeNotes(res.Note, "audit2allow 不可用: "+allowErr.Error())
+		} else {
+			// 含 rc≥2:优雅降级,但 note 记明后端 + 错误,不静默
+			res.Note = mergeNotes(res.Note, "audit2allow 调用失败: "+allowErr.Error())
 		}
 	}
 	if allowBuf.Len() > 0 {
@@ -419,7 +452,7 @@ func (s *service) Summary(ctx context.Context, args SummaryArgs) (SummaryResult,
 
 	var lines [][]byte
 	execNote := ""
-	err := s.run(execCtx, ausearchBinary, func(line []byte) bool {
+	err := s.run(execCtx, ausearchBinary, nil, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		return true
 	}, argv...)
@@ -461,7 +494,7 @@ func aggregateBuckets(events []AVCEvent) []SummaryBucket {
 	return out
 }
 
-// --- 退出码 / 包装 ---
+// --- 可移植 runner(core,克隆 smart / gpu 等插件时带走本块)---
 
 // execError 是 CLI 非零退出的类型化包装:Code 是子进程真实退出码,Stderr 是
 // 子进程 stderr 内容。调用方可用 errors.As 取出 Code 决定按"已安装列表差异"
@@ -481,64 +514,6 @@ func (e *execError) Unwrap() error { return e.Cause }
 // isMissingBinary 识别"binary 不在"的 ENOENT 降级信号。
 func isMissingBinary(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound)
-}
-
-// isAusearchNoMatch 识别 ausearch rc=1 + stderr 含 "<no matches>" 的合法
-// 空集信号。本机实测 ausearch --input <empty> -m rc=1 时 stdout 写
-// "<no matches>"(实参 stderr 也可能含),按异常 envelope 收 stderr。
-func isAusearchNoMatch(err error) bool {
-	if err == nil {
-		return false
-	}
-	var ee *execError
-	if !errors.As(err, &ee) {
-		return false
-	}
-	return ee.Code == 1 && strings.Contains(ee.Stderr, "<no matches>")
-}
-
-// isAuditLogUnavailable 识别 ausearch rc=1 + stderr 含 "Error opening
-// /var/log/audit/audit.log" 或 "Error opening config file" 的审计日志不可读
-// 信号。两种都是 auditd 未启用 / 配置无访问权限的常见形态。
-func isAuditLogUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	var ee *execError
-	if !errors.As(err, &ee) {
-		return false
-	}
-	if ee.Code != 1 {
-		return false
-	}
-	return strings.Contains(ee.Stderr, "Error opening /var/log/audit") ||
-		strings.Contains(ee.Stderr, "Error opening config file")
-}
-
-// handleExecError 收敛三只 CLI runner 错误的语义分类:binary 缺失、rc=1+<no
-// matches>、rc=1+审计日志不可读均非 fatal,降级为 note;rc≥2 或非 *execError
-// 视为真故障,fatal=true 上抛。
-//
-// 调用方约定:err != nil 且 !fatal 时不得把结果宣称为"干净 / 合法空集"——
-// rc=1 已声明某种失败;run 收集到的行后续要按业务解释继续解析。
-func handleExecError(err error) (note string, fatal bool) {
-	if err == nil {
-		return "", false
-	}
-	if isMissingBinary(err) {
-		return "CLI 不可用: " + err.Error(), false
-	}
-	var ee *execError
-	if !errors.As(err, &ee) || ee.Code >= 2 {
-		return "", true
-	}
-	if isAusearchNoMatch(err) {
-		return "无匹配 AVC 事件", false
-	}
-	if isAuditLogUnavailable(err) {
-		return "auditd 未启用或审计日志不可访问: " + strings.TrimSpace(ee.Stderr), false
-	}
-	return "ausearch 报告差异(退出码 1),已按 stdout 解析", false
 }
 
 // mergeNotes 合并非空 note;空串跳过,重复同串去重,其余以 "; " 连接。
@@ -563,19 +538,19 @@ func mergeNotes(notes ...string) string {
 	return strings.Join(kept, "; ")
 }
 
-// --- runCLI / stdinRunner ---
-
-// runCLI 通用 fork 包装:绝对路径 argv 直发(绝不经过 sh -c),逐行把 stdout
-// 喂给 onLine。onLine 返回 false 时杀子进程并正常收工。stderr 必须在
-// cmd.Start() 之前接好(承接 journal/integrity 教训)。
+// execHelper 通用 fork 包装:绝对路径 argv 直发(绝不经过 sh -c),逐行把 stdout
+// 喂给 onLine。stdin 二选一:nil 时子进程不接 stdin,非 nil 时以 reader 直喂
+// (audit2why / audit2allow 接收 ausearch 提取的记录)。onLine 返回 false 时杀
+// 子进程并正常收工。stderr 必须在 cmd.Start() 之前接好(承接 journal/integrity
+// 教训:Start 前不接,stderr 永远空)。
 //
 // 退出码语义:
 //   - ctx 超时/取消:优先返回 ctx.Err()(DeadlineExceeded / Canceled)。
 //   - 任意非零退出:stderr wrap 上抛(envelope 形式:execError{Code,Stderr,Cause})。
 //   - run 内部不再加超时:调用方用 context.WithTimeout 派生 execCtx。
-func runCLI(ctx context.Context, bin string, onLine func([]byte) bool, args ...string) error {
+func execHelper(ctx context.Context, bin string, stdin io.Reader, onLine func([]byte) bool, args ...string) error {
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdin = nil
+	cmd.Stdin = stdin
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("%s stdout 管道失败: %w", bin, err)
@@ -621,54 +596,11 @@ func runCLI(ctx context.Context, bin string, onLine func([]byte) bool, args ...s
 	return nil
 }
 
-// stdinRunner 与 runCLI 同形,但额外喂 stdin(用于 audit2why / audit2allow
-// 接收 ausearch 提取的记录)。退出码语义与 runCLI 一致。
-func stdinRunner(ctx context.Context, bin string, stdin []byte, onLine func([]byte) bool, args ...string) error {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdin = strings.NewReader(string(stdin))
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("%s stdout 管道失败: %w", bin, err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		if isMissingBinary(err) {
-			return err
-		}
-		return fmt.Errorf("%s 启动失败: %w", bin, err)
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		if !onLine(scanner.Bytes()) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return nil
-		}
-	}
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
-
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	if scanErr != nil {
-		return fmt.Errorf("%s 读取失败: %w", bin, scanErr)
-	}
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			code := exitErr.ExitCode()
-			if code != 0 {
-				return &execError{Code: code, Stderr: stderr.String(), Cause: waitErr}
-			}
-		}
-		return fmt.Errorf("%s 失败: %w(%s)", bin, waitErr, strings.TrimSpace(stderr.String()))
-	}
-	return nil
+// runCLI 是无 stdin 形态的可移植便捷入口(stdin 恒 nil)。带 stdin 一律直调
+// execHelper;tests 与家族其它插件(triage / journal / integrity)的 runCLI
+// 形态对齐。
+func runCLI(ctx context.Context, bin string, onLine func([]byte) bool, args ...string) error {
+	return execHelper(ctx, bin, nil, onLine, args...)
 }
 
 // --- audit2why / audit2allow 输出后处理 ---
@@ -747,6 +679,3 @@ func checkStartupEnv() {
 		}
 	}
 }
-
-// --- 未使用占位(抑制某些 IDE 警告) ---
-var _ = strconv.Itoa

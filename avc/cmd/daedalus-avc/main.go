@@ -29,12 +29,6 @@ import (
 
 const serverName = "daedalus-avc"
 
-// emptyIn 是无参工具的输入类型(客户端 arguments 必须是 JSON 对象)。
-type emptyIn struct{}
-
-// noArgsSchema 对应无参工具的 {"type": "object"} 输入模式。
-var noArgsSchema = &jsonschema.Schema{Type: "object"}
-
 // avcRecentIn 是 avc_recent 的 MCP 入参(since 可选,limit 可选)。
 type avcRecentIn struct {
 	Since *string `json:"since,omitempty"`
@@ -110,7 +104,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "avc_explain",
-		Description: "只读解释单条 SELinux AVC 拒绝事件:先用 ausearch -a <event_id> 拉原记录,再经 audit2why 解释被拒原因、audit2allow --explain 给出建议 allow 规则。绝不修改 SELinux 策略;event_id 不存在 / CLI 缺失时降级为 note。\n\n参数:\n    event_id: 审计事件序列号(必填;仅数字,或 epoch:serial 形态)。\n\n返回:\n    {\"event_id\": \"...\", \"reason\": \"...\", \"suggestion\": \"...\", \"confidence\": \"type_enforcement|boolean|policy_version|none|unknown\", \"note\": \"...\"}。",
+		Description: "只读解释单条 SELinux AVC 拒绝事件:先用 ausearch -a <event_id> 拉原记录,再经 audit2why 解释被拒原因、audit2allow --explain 给出建议 allow 规则。绝不修改 SELinux 策略;event_id 不存在 / CLI 缺失时降级为 note。\n\n参数:\n    event_id: 审计事件序列号(必填;仅数字,或 epoch:serial 形态——epoch:serial 会自动剥为 serial 喂 -a)。\n\n返回:\n    {\"event_id\": \"...\", \"reason\": \"...\", \"suggestion\": \"...\", \"confidence\": \"type_enforcement|boolean|policy_version|none|unknown\", \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
