@@ -713,6 +713,298 @@ func hasArg(argv []string, key, val string) bool {
 	return false
 }
 
+// argAfter 返回 argv 中 key 后紧跟的值(用于取 -qf 的路径)。
+func argAfter(argv []string, key string) string {
+	for i, a := range argv {
+		if a == key && i+1 < len(argv) {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
 // ptrStr / ptrInt 测试构造指针参数。
 func ptrStr(s string) *string { return &s }
 func ptrInt(n int) *int       { return &n }
+
+// --- review r1 回归(C1/C2/C3/I2/I3) ---
+
+// nsFakeRunner 是 NAME 命名空间口径的"真 rpm 形态"假执行:按 argv 分发回放
+// -qa / -Va / -qf 三档响应;-qf 是否带 queryformat 决定输出 NAME 还是 NEVRA,
+// 钉住"统一命名空间"这条不可漂移的约束(C1 形态钉子)。
+type nsFakeRunner struct {
+	qaNames    []string
+	vaLines    []string
+	pathOwner  map[string][2]string // 路径 → [NAME, NEVRA],任一可空
+	vaErr      error                // -Va 阶段的退出错误(nil 则 rc=0)
+	qfArgvs    [][]string           // 记录每次 -qf 的 argv(断言 --queryformat)
+	qaDuplicas bool                 // -qa 不去重(供 I2 dedup 检验用)
+}
+
+// runWithNs 是 nsFakeRunner 满足 execRunner 的入口。
+func (r *nsFakeRunner) runWithNs(_ context.Context, onLine func([]byte) bool, args ...string) error {
+	switch {
+	case hasArg(args, "-qa", ""):
+		names := r.qaNames
+		if r.qaDuplicas {
+			names = append(names, names...)
+		}
+		for _, l := range names {
+			if !onLine([]byte(l)) {
+				return nil
+			}
+		}
+		return nil
+	case hasArg(args, "-Va", ""):
+		for _, l := range r.vaLines {
+			if !onLine([]byte(l)) {
+				return nil
+			}
+		}
+		return r.vaErr
+	case hasArg(args, "-qf", ""):
+		r.qfArgvs = append(r.qfArgvs, append([]string(nil), args...))
+		path := argAfter(args, "-qf")
+		owner := r.pathOwner[path]
+		// 命名空间口径:带 --queryformat 输出 NAME,缺省输出 NEVRA —— 与真
+		// rpm -qf 在两种形态下的输出对齐,使旧实现(NEVRA)与新实现(NAME)
+		// 在本 fake 下产生可区分的归属值。
+		if hasArg(args, "--queryformat", "") {
+			_ = onLine([]byte(owner[0]))
+		} else {
+			_ = onLine([]byte(owner[1]))
+		}
+		return nil
+	}
+	return nil
+}
+
+func newNsService(r *nsFakeRunner) *service {
+	return &service{run: r.runWithNs, rpmTimeout: rpmTimeout}
+}
+
+// TestUnchanged_Full_NameNamespace C1 回归:rpm -qf 一律带 --queryformat '%{NAME}\n}',
+// 归属与全集落在同一 NAME 命名空间;被改包必须从未改集排除。旧实现 `-qf <path>`
+// 输出 NEVRA,落不进 NAME 全集,断言失败。
+func TestUnchanged_Full_NameNamespace(t *testing.T) {
+	fr := &nsFakeRunner{
+		qaNames: []string{"bash", "coreutils", "dnf", "filesystem", "glibc", "rpm"},
+		vaLines: []string{
+			"S.5....T.  c /etc/dnf/dnf.conf",
+			"..U......    /usr/bin/ls",
+		},
+		pathOwner: map[string][2]string{
+			"/etc/dnf/dnf.conf": {"dnf", "dnf-4.14.2-1.el9.noarch"},
+			"/usr/bin/ls":       {"coreutils", "coreutils-8.32-34.el9.x86_64"},
+		},
+	}
+	svc := newNsService(fr)
+	res, err := svc.Unchanged(context.Background(), UnchangedArgs{})
+	if err != nil {
+		t.Fatalf("Unchanged 应成功: %v", err)
+	}
+	want := map[string]bool{"bash": true, "filesystem": true, "glibc": true, "rpm": true}
+	if res.TotalLines != len(want) {
+		t.Errorf("TotalLines=%d, want %d (res=%+v)", res.TotalLines, len(want), res)
+	}
+	for _, p := range res.Packages {
+		if !want[p] {
+			t.Errorf("未改集含 NAME 命名空间外的项 %q: %v", p, res.Packages)
+		}
+		delete(want, p)
+	}
+	for p := range want {
+		t.Errorf("未改集缺包 %q: %v", p, res.Packages)
+	}
+	// 钉死约束:归属查询必须带 --queryformat,否则输出 NEVRA 让本测试原地
+	// 失败(上一段断言也会失败,这里是 belt-and-suspenders)。
+	for i, argv := range fr.qfArgvs {
+		if !hasArg(argv, "--queryformat", "") {
+			t.Errorf("第 %d 次 -qf 未带 --queryformat,归属落 NEVRA 命名空间: %v", i, argv)
+		}
+	}
+}
+
+// TestSummary_ChangedPackagesTopIsName C1 回归:Summary.ChangedPackagesTop 必须是
+// NAME 不是 NEVRA,否则下游消费者无法与包全集做差。
+func TestSummary_ChangedPackagesTopIsName(t *testing.T) {
+	fr := &nsFakeRunner{
+		qaNames: []string{"bash", "coreutils", "dnf"},
+		vaLines: []string{
+			"S.5....T.  c /etc/dnf/dnf.conf",
+			"..U......    /usr/bin/ls",
+		},
+		pathOwner: map[string][2]string{
+			"/etc/dnf/dnf.conf": {"dnf", "dnf-4.14.2-1.el9.noarch"},
+			"/usr/bin/ls":       {"coreutils", "coreutils-8.32-34.el9.x86_64"},
+		},
+	}
+	svc := newNsService(fr)
+	res, err := svc.Summary(context.Background())
+	if err != nil {
+		t.Fatalf("Summary 应成功: %v", err)
+	}
+	if res.ChangedPackages != 2 {
+		t.Errorf("ChangedPackages=%d, want 2", res.ChangedPackages)
+	}
+	if len(res.ChangedPackagesTop) != 2 {
+		t.Fatalf("ChangedPackagesTop=%v, want 2 项", res.ChangedPackagesTop)
+	}
+	want := map[string]bool{"dnf": true, "coreutils": true}
+	for _, p := range res.ChangedPackagesTop {
+		if !want[p] {
+			t.Errorf("ChangedPackagesTop 含 NEVRA 形态 %q: %v", p, res.ChangedPackagesTop)
+		}
+		delete(want, p)
+	}
+	for p := range want {
+		t.Errorf("ChangedPackagesTop 缺包 %q: %v", p, res.ChangedPackagesTop)
+	}
+}
+
+// TestUnchanged_Full_Rc1DiffParsed C2 回归:-Va rc=1(文档语义"报告差异")不应上抛,
+// 必须按 stdout 继续解析归属,被改包从未改集排除;旧实现把 rc=1 当 fork 失败
+// 上抛,断言失败。
+func TestUnchanged_Full_Rc1DiffParsed(t *testing.T) {
+	fr := &nsFakeRunner{
+		qaNames: []string{"bash", "coreutils", "dnf"},
+		vaLines: []string{"S.5....T.  c /etc/dnf/dnf.conf"},
+		pathOwner: map[string][2]string{
+			"/etc/dnf/dnf.conf": {"dnf", "dnf-4.14.2-1.el9.noarch"},
+		},
+		vaErr: &execError{Code: 1, Stderr: ""},
+	}
+	svc := newNsService(fr)
+	res, err := svc.Unchanged(context.Background(), UnchangedArgs{})
+	if err != nil {
+		t.Fatalf("rc=1(报告差异)非致命,不应上抛: %v", err)
+	}
+	for _, p := range res.Packages {
+		if p == "dnf" {
+			t.Errorf("rc=1 已声明存在差异,未改集不得含 dnf: %v", res.Packages)
+		}
+	}
+	if !strings.Contains(res.Note, "差异") {
+		t.Errorf("rc=1 应降级为'差异' note, got %q", res.Note)
+	}
+}
+
+// TestVerifyAll_Rc2Propagated C3 回归:Verify(all=true) 下 rc=2 真故障必须上抛;
+// 旧实现把 rc≥2 的 fatal 分支挂在 args.Package != nil 内,全量形态漏判,断言失败。
+func TestVerifyAll_Rc2Propagated(t *testing.T) {
+	svc, fr := newFakeService()
+	fr.err = &execError{Code: 2, Stderr: "cannot open Packages database"}
+	_, err := svc.Verify(context.Background(), VerifyArgs{All: true})
+	if err == nil {
+		t.Fatal("全量形态 rc≥2 真故障必须上抛(与单包形态一致)")
+	}
+	if !strings.Contains(err.Error(), "cannot open Packages database") {
+		t.Errorf("错误应含 stderr: %q", err.Error())
+	}
+}
+
+// TestSummary_TotalPackagesDedup I2 回归:rpm -qa 输出 multilib/kernel 多实例
+// 时 NAME 重复出现,TotalPackages 必须按首次出现去重,否则多算。旧实现未去重。
+func TestSummary_TotalPackagesDedup(t *testing.T) {
+	fr := &nsFakeRunner{
+		qaNames:    []string{"glibc", "glibc", "kernel", "kernel", "kernel", "bash"},
+		pathOwner:  map[string][2]string{},
+		qaDuplicas: true, // 让 fake 真的输出 12 行重复 NAME
+	}
+	svc := newNsService(fr)
+	res, err := svc.Summary(context.Background())
+	if err != nil {
+		t.Fatalf("Summary 应成功: %v", err)
+	}
+	if res.TotalPackages != 3 {
+		t.Errorf("TotalPackages=%d, want 3(去重后 glibc/kernel/bash)", res.TotalPackages)
+	}
+}
+
+// TestHandleExecError I3 回归:rc 语义集中分类(none / 缺二进制 / rc=1 not-installed /
+// rc=1 diff / rc≥2 / 非 *execError / ctx)的单元表。
+func TestHandleExecError(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantNote  string // 子串匹配
+		wantFatal bool
+	}{
+		{"nil", nil, "", false},
+		{"missing-binary", &fs.PathError{Op: "fork/exec", Path: rpmBinary, Err: fs.ErrNotExist}, "不可用", false},
+		{"rc1-not-installed", &execError{Code: 1, Stderr: "package latex is not installed"}, "不存在", false},
+		{"rc1-diff", &execError{Code: 1, Stderr: ""}, "差异", false},
+		{"rc2", &execError{Code: 2, Stderr: "cannot open Packages database"}, "", true},
+		{"non-exec", errors.New("rpm 读取失败: broken pipe"), "", true},
+		{"ctx-deadline", context.DeadlineExceeded, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			note, fatal := handleExecError(c.err)
+			if fatal != c.wantFatal {
+				t.Errorf("fatal=%v, want %v", fatal, c.wantFatal)
+			}
+			if c.wantNote == "" && note != "" {
+				t.Errorf("wantNote='' 但 got %q", note)
+			}
+			if c.wantNote != "" && !strings.Contains(note, c.wantNote) {
+				t.Errorf("note=%q 应含 %q", note, c.wantNote)
+			}
+		})
+	}
+}
+
+// TestCollectChangedPackages_UnownedFiltered -qf 对无归属文件告警行(stdout 上的
+// "file X is not owned by any package")必须过滤,不让告警文本落到已改包集合里;
+// 旧实现用 HasSuffix("not owned") 命中不上该文本。
+func TestCollectChangedPackages_UnownedFiltered(t *testing.T) {
+	fr := &nsFakeRunner{
+		vaLines: []string{"S.5....T.  c /tmp/unowned-file"},
+		pathOwner: map[string][2]string{
+			"/tmp/unowned-file": {"file /tmp/unowned-file is not owned by any package", "file /tmp/unowned-file is not owned by any package"},
+		},
+	}
+	svc := newNsService(fr)
+	changed := map[string]struct{}{}
+	_, note, err := svc.collectChangedPackages(context.Background(), changed)
+	if err != nil {
+		t.Fatalf("无归属告警应非致命: %v", err)
+	}
+	if len(changed) != 0 {
+		t.Errorf("无归属告警应被过滤, got changed=%v note=%q", changed, note)
+	}
+}
+
+// TestCollectChangedPackages_AllArgsCarryQueryFormat 钉死约束:collectChangedPackages
+// 对每条差异路径发起的 rpm -qf 都必须带 --queryformat 与 nameQueryFormat,否则
+// 后续命名空间不收敛(参 TestUnchanged_Full_NameNamespace 的 belt-and-suspenders)。
+func TestCollectChangedPackages_AllArgsCarryQueryFormat(t *testing.T) {
+	fr := &nsFakeRunner{
+		vaLines: []string{
+			"S.5....T.  c /etc/dnf/dnf.conf",
+			"..U......    /usr/bin/ls",
+			"missing   /var/lib/orphan (Permission denied)",
+		},
+		pathOwner: map[string][2]string{
+			"/etc/dnf/dnf.conf": {"dnf", "dnf-4.14.2-1.el9.noarch"},
+			"/usr/bin/ls":       {"coreutils", "coreutils-8.32-34.el9.x86_64"},
+			"/var/lib/orphan":   {"filesystem", "filesystem-3.16-2.el9.x86_64"},
+		},
+	}
+	svc := newNsService(fr)
+	_, _, err := svc.collectChangedPackages(context.Background(), map[string]struct{}{})
+	if err != nil {
+		t.Fatalf("collectChangedPackages 应成功: %v", err)
+	}
+	if len(fr.qfArgvs) != 3 {
+		t.Fatalf("qfArgvs=%d, want 3(每条唯一路径一次)", len(fr.qfArgvs))
+	}
+	for i, argv := range fr.qfArgvs {
+		if !hasArg(argv, "--queryformat", "") {
+			t.Errorf("第 %d 次 -qf 缺 --queryformat: %v", i, argv)
+		}
+		if !hasArg(argv, "--queryformat", nameQueryFormat) {
+			t.Errorf("第 %d 次 -qf --queryformat 值应为 nameQueryFormat=%q, got %v", i, nameQueryFormat, argv)
+		}
+	}
+}

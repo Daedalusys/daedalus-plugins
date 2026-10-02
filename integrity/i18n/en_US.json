@@ -1,8 +1,8 @@
 {
   "tool.rpm_verify.title": "RPM Verify",
-  "tool.rpm_verify.description": "Read-only comparison of installed files against the rpm DB record, reporting modified files (permission/ownership/hash/md5/size/device/mtime/symlink/capabilities drift).",
+  "tool.rpm_verify.description": "Read-only comparison of installed files against the rpm DB record, reporting modified files (permission/ownership/hash/md5/size/device/mtime/symlink/capabilities drift). In deployment, CAP_DAC_READ_SEARCH lets it read root-only files for integrity checks (non-root, without full privileges).",
   "tool.rpm_unchanged.title": "RPM Unchanged",
-  "tool.rpm_unchanged.description": "Read-only list of packages whose files match the rpm DB perfectly (vast majority of packages).",
+  "tool.rpm_unchanged.description": "Read-only list of packages whose files match the rpm DB perfectly (vast majority of packages). In deployment, CAP_DAC_READ_SEARCH lets it read root-only files for integrity checks (non-root, without full privileges).",
   "tool.rpm_summary.title": "RPM Summary",
-  "tool.rpm_summary.description": "Read-only aggregate drift statistics: total packages, changed packages, changed files, plus top-50 changed package names."
+  "tool.rpm_summary.description": "Read-only aggregate drift statistics: total packages, changed packages, changed files, plus top-50 changed package names. In deployment, CAP_DAC_READ_SEARCH lets it read root-only files for integrity checks (non-root, without full privileges)."
 }

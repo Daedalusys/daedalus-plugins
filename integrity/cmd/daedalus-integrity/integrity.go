@@ -13,13 +13,17 @@
 //     出现分歧。代码防御性 parse stdout,rc 1/2+ 区分故障类型上抛给调用方
 //     决定。
 //   - 1      : 包未安装("package X is not installed")或文档语义的"有差异";
-//     包装成 *execError{Code:1,Stderr} 让调用方按工具语义分流:
-//     rpm_verify 单包形态 → note 包不存在;rpm_verify -Va 全量 → 当文档语义
-//     parse stdout(实际产物通常 rc=0,此处仅做兼容)。
-//   - ≥2     : 真故障(DB 损坏 / 不可读),wrap *execError{Code,Stderr} 上抛,
-//     不吞。
+//     包装成 *execError{Code:1,Stderr} 交 handleExecError 统一分类为非致命
+//     note,各工具按已收集的 stdout 继续解析(绝不 abort)。
+//   - ≥2     : 真故障(DB 损坏 / 不可读),handleExecError 判 fatal,wrap
+//     *execError{Code,Stderr} 上抛,不吞(全量与单包形态一视同仁)。
 //   - ctxErr : DeadlineExceeded/Canceled 一律优先于 Wait 返回值(参
 //     journal 模板的 ctx 到期语义)。
+//
+// 命名空间口径:rpm 包 NAME(不是 NEVRA)。`rpm -qf <path>` 缺省输出 NEVRA
+// (如 setup-2.13.7-10.el9.noarch),与 `rpm -qa --queryformat '%{NAME}\n'`
+// 的 NAME(setup)不同命名空间;归属查询一律带 --queryformat '%{NAME}\n',
+// 集合比对才可能命中。
 package main
 
 import (
@@ -32,7 +36,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +58,12 @@ const (
 	// summaryDefaultTopN 是 SummaryResult.ChangedPackagesTop 的截断阈值;
 	// 大量被改包时只回显前 N 个 + 总数。
 	summaryDefaultTopN = 50
+
+	// nameQueryFormat 是统一 NAME 查询格式:rpm 在 -qf/-qa 下缺省输出
+	// NEVRA(`setup-2.13.7-10.el9.noarch`),与 NAME 集合(全集 - 已改集)
+	// 不同集合,让"全量包 - 归属配"比对永不命中。统一带 `nameQueryFormat`
+	// 才使两路名字落到同一命名空间(参包头注释)。
+	nameQueryFormat = "%{NAME}\n"
 )
 
 // packagePattern 是 package 名的字符集白名单:首字符必须是字母/数字/下划线
@@ -100,6 +109,63 @@ func isMissingBinary(err error) bool {
 func isPackageNotInstalled(stderr string) bool {
 	s := strings.ToLower(strings.TrimSpace(stderr))
 	return strings.Contains(s, "is not installed")
+}
+
+// isUnownedMessage 识别 rpm -qf 对无归属文件的告警行(LC_ALL=C 下整行
+// "file /x is not owned by any package");该行误碰 NAME 集合会污染
+// 已改包,必须排除。先前实现用 HasSuffix("not owned") 命中不上该行,导致
+// 误把无归属文件当成某个"unknown"包加入 changed 集(违规)。
+func isUnownedMessage(s string) bool {
+	return strings.Contains(s, "is not owned")
+}
+
+// handleExecError 收敛 rpm runner 错误的语义分类:rpm 缺失与 rc=1(包未安装 /
+// 报告差异)非 fatal,降级为 note 交调用方按 stdout 继续;rc≥2 或非 *execError
+// 视为真故障,fatal=true 上抛。
+//
+// 调用方约定:err != nil 且 !fatal 时不得把结果宣称为"干净 / 未改"——rc=1 已
+// 声明存在差异;rpm 缺失时收集到的行必为空(注入 fake runner 时不在管辖)。
+func handleExecError(err error) (note string, fatal bool) {
+	if err == nil {
+		return "", false
+	}
+	if isMissingBinary(err) {
+		return "rpm 不可用: " + err.Error(), false
+	}
+	var ee *execError
+	if !errors.As(err, &ee) || ee.Code >= 2 {
+		return "", true
+	}
+	// rc=1:"包未安装" 或文档语义"报告差异",两者都按已收集的 stdout 继续
+	// 解析,但 note 文案区分,免得误导调用方去找不存在的包。
+	if isPackageNotInstalled(ee.Stderr) {
+		return "包不存在: " + strings.TrimSpace(ee.Stderr), false
+	}
+	return "rpm 报告差异(退出码 1),已按 stdout 解析", false
+}
+
+// mergeNotes 合并非空 note;空串跳过,重复同串去重,其余以 "; " 连接。
+// 截断/降级等多源 note 拼接的通用入口,避免每次手写 strings.TrimSpace+Join
+// 漂移。
+func mergeNotes(notes ...string) string {
+	var kept []string
+	for _, n := range notes {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		dup := false
+		for _, k := range kept {
+			if k == n {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			kept = append(kept, n)
+		}
+	}
+	return strings.Join(kept, "; ")
 }
 
 // --- 载荷类型 ---
@@ -263,8 +329,9 @@ func newService() *service {
 	return &service{run: runRPM, rpmTimeout: rpmTimeout}
 }
 
-// Verify 执行 rpm_verify:单包走 `rpm -V <pkg>`,全量走 `rpm -Va` + 分页;
-// rc=1 时按工具语义分流(单包 → note 包不存在;全量 → 防御性 parse stdout)。
+// Verify 执行 rpm_verify:单包走 `rpm -V <pkg>`,全量走 `rpm -Va` + 分页。
+// 单包与全量形态合流到同一行收割 + parseVerifyOutput;rc 语义集中由
+// handleExecError 决定 fatal 与 note(不再分头 "could be rc=1 / rc≥2")。
 func (s *service) Verify(ctx context.Context, args VerifyArgs) (VerifyResultPage, error) {
 	if err := args.Validate(); err != nil {
 		return VerifyResultPage{}, err
@@ -273,9 +340,8 @@ func (s *service) Verify(ctx context.Context, args VerifyArgs) (VerifyResultPage
 	defer cancel()
 
 	var (
-		argv   []string
-		echo   string // 写入每条 Entry.Package 的包名,全量形态留空
-		runner = s.run
+		argv []string
+		echo string // 写入每条 Entry.Package 的包名,全量形态留空
 	)
 	if args.Package != nil {
 		argv = []string{"-V", *args.Package}
@@ -284,44 +350,29 @@ func (s *service) Verify(ctx context.Context, args VerifyArgs) (VerifyResultPage
 		argv = []string{"-Va"}
 	}
 
-	// 收集原始行后由 applyLimitOffset 切片;不依赖 rpm -V 是否遵守 --limit
+	// 收集原始行后由 visiblePage 切片;不依赖 rpm -V 是否遵守 --limit
 	// (rpm 不支持 --limit) —— 只能在应用层收割。
 	var lines [][]byte
-	err := runner(execCtx, func(line []byte) bool {
+	execNote := ""
+	err := s.run(execCtx, func(line []byte) bool {
 		lines = append(lines, append([]byte(nil), line...))
 		return true
 	}, argv...)
 	if err != nil {
-		if isMissingBinary(err) {
-			return VerifyResultPage{Entries: []VerifyResult{}, Note: "rpm 不可用: " + err.Error()}, nil
-		}
-		var ee *execError
-		if errors.As(err, &ee) {
-			// 单包形态 rc=1 + stderr 含 "not installed" → 包不存在 → 空集 + note。
-			// 单包形态 rc=1 + 其他(stderr 空或别的) → 文档语义"有差异",parse
-			// stdout 正常返回(本机 rpm 4.16 实测反而恒 rc=0,此分支兼容老 rpm
-			// 或包装层做的 rc 重写)。
-			if args.Package != nil {
-				if isPackageNotInstalled(ee.Stderr) {
-					return VerifyResultPage{
-						Entries: []VerifyResult{},
-						Note:    fmt.Sprintf("包 %q 不存在", *args.Package),
-					}, nil
-				}
-				// rc≥2:真故障上抛(包形态)
-				if ee.Code >= 2 {
-					return VerifyResultPage{}, err
-				}
-				// rc=1 (解析语义有差异):落穿到下方 parseVerifyOutput
-			}
-		} else {
+		note, fatal := handleExecError(err)
+		if fatal {
 			return VerifyResultPage{}, err
 		}
+		execNote = note
 	}
 
 	entries, skipped := parseVerifyOutput(lines)
-	_ = skipped // TODO: 未在 wire 上暴露 skipped_lines;保持对内可观察
-	return visiblePage(entries, *args.Limit, *args.Offset, echo), nil
+	_ = skipped // 留作对内可观察:解析失败行不破坏整体输出,但用户层暂未暴露。
+	page := visiblePage(entries, *args.Limit, *args.Offset, echo)
+	if execNote != "" {
+		page.Note = mergeNotes(execNote, page.Note)
+	}
+	return page, nil
 }
 
 // visiblePage 按 limit/offset 切片并填充分页统计。
@@ -352,7 +403,7 @@ func visiblePage(in []VerifyResult, limit, offset int, echo string) VerifyResult
 }
 
 // Unchanged 执行 rpm_unchanged:单包走 `rpm -V <pkg>`(空输出 = 未改);全量
-// 走 `rpm -qa` + `rpm -Va` + 去重 owner 集 - 已改集 = 未改集。
+// 走 `rpm -qa` + `rpm -Va` + 归属集 - 已改集 = 未改集。
 func (s *service) Unchanged(ctx context.Context, args UnchangedArgs) (UnchangedResult, error) {
 	if err := args.Validate(); err != nil {
 		return UnchangedResult{}, err
@@ -363,55 +414,40 @@ func (s *service) Unchanged(ctx context.Context, args UnchangedArgs) (UnchangedR
 	if args.Package != nil {
 		// 单包形态:跑一次 rpm -V,空输出 = 未改,有输出 = 已改。
 		var lines [][]byte
+		execNote := ""
 		err := s.run(execCtx, func(line []byte) bool {
 			lines = append(lines, append([]byte(nil), line...))
 			return true
 		}, "-V", *args.Package)
 		if err != nil {
-			if isMissingBinary(err) {
-				return UnchangedResult{Packages: []string{}, Note: "rpm 不可用: " + err.Error()}, nil
-			}
-			var ee *execError
-			if errors.As(err, &ee) {
-				if ee.Code == 1 && isPackageNotInstalled(ee.Stderr) {
-					return UnchangedResult{
-						Packages:   []string{},
-						TotalLines: 0,
-						Returned:   0,
-						Note:       fmt.Sprintf("包 %q 不存在", *args.Package),
-					}, nil
-				}
-				// rc=1 + 其他(stderr 空/有差异):落穿到下面 len(lines) 判定;
-				// rc≥2:真故障上抛。
-				if ee.Code >= 2 {
-					return UnchangedResult{}, err
-				}
-			} else {
+			note, fatal := handleExecError(err)
+			if fatal {
 				return UnchangedResult{}, err
 			}
+			execNote = note
 		}
 		res := UnchangedResult{
 			Packages:   []string{},
 			TotalLines: len(lines),
-			Returned:   0,
+			Note:       execNote,
 		}
-		if len(lines) == 0 {
+		// 仅在 rpm 干净退出且无输出时判"未改";rc=1(有差异)或 rpm 缺失时
+		// 不得宣称该包未改(handleExecError 的调用方约定)。
+		if err == nil && len(lines) == 0 {
 			res.Packages = []string{*args.Package}
 			res.Returned = 1
 		}
 		return res, nil
 	}
 
-	// 全量形态:rpm -qa + rpm -Va + rpm -qf per unique path → 未改 = 全集 - 已改集。
+	// 全量形态:`rpm -Va` + `rpm -qf` 归属 → 未改 = 全集 - 已改集。两路
+	// note 并存(-Va 与 -qa)合并去重后随 res 返回。
 	changed := make(map[string]struct{})
-	if err := s.collectChangedPackages(ctx, changed); err != nil {
-		if isMissingBinary(err) {
-			return UnchangedResult{Packages: []string{}, Note: "rpm 不可用: " + err.Error()}, nil
-		}
+	_, noteA, err := s.collectChangedPackages(ctx, changed)
+	if err != nil {
 		return UnchangedResult{}, err
 	}
-
-	allPkgs, err := s.collectAllPackages(ctx)
+	allPkgs, noteB, err := s.collectAllPackages(ctx)
 	if err != nil {
 		return UnchangedResult{}, err
 	}
@@ -422,7 +458,9 @@ func (s *service) Unchanged(ctx context.Context, args UnchangedArgs) (UnchangedR
 			unchanged = append(unchanged, p)
 		}
 	}
-	return visibleUnchanged(unchanged, *args.Limit, *args.Offset), nil
+	res := visibleUnchanged(unchanged, *args.Limit, *args.Offset)
+	res.Note = mergeNotes(noteA, noteB, res.Note)
+	return res, nil
 }
 
 // visibleUnchanged 对 unchanged 包名做分页。
@@ -456,55 +494,23 @@ func (s *service) Summary(ctx context.Context) (SummaryResult, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.rpmTimeout)
 	defer cancel()
 
-	allPkgs, err := s.collectAllPackagesIn(execCtx)
+	allPkgs, noteA, err := s.collectAllPackages(execCtx)
 	if err != nil {
-		if isMissingBinary(err) {
-			return SummaryResult{Note: "rpm 不可用: " + err.Error()}, nil
-		}
 		return SummaryResult{}, err
 	}
 
 	// 收集差异文件并归属到包;容错路径:VA 命令超时/中断时降级为
-	// total_packages + note(timeout),不返回错误。
+	// total_packages + note(timeout),不返回错误。-Va rc=1 由 collectChangedPackages
+	// 内部按 handleExecError 处理为"报告差异,已按 stdout 解析"非致命 note。
 	changedPkgs := make(map[string]struct{})
-	diffCount := 0
-	seen := make(map[string]bool)
-	vaErr := s.run(execCtx, func(line []byte) bool {
-		path := extractPath(line)
-		if path == "" {
-			return true
-		}
-		diffCount++
-		if seen[path] {
-			return true
-		}
-		seen[path] = true
-		// 对该唯一路径 rpm -qf 取归属
-		qfCtx, qfCancel := context.WithTimeout(execCtx, s.rpmTimeout)
-		defer qfCancel()
-		var ownerLine []byte
-		_ = s.run(qfCtx, func(line []byte) bool {
-			ownerLine = append([]byte(nil), line...)
-			return false
-		}, "-qf", path)
-		if len(ownerLine) > 0 {
-			owner := strings.TrimSpace(string(ownerLine))
-			if owner != "" && !strings.HasSuffix(owner, "not owned") {
-				changedPkgs[owner] = struct{}{}
-			}
-		}
-		return true
-	}, "-Va")
+	diffCount, noteB, vaErr := s.collectChangedPackages(execCtx, changedPkgs)
 	if vaErr != nil {
-		if isMissingBinary(vaErr) {
-			return SummaryResult{Note: "rpm 不可用: " + vaErr.Error()}, nil
-		}
 		// ctx 超时/中断:rpm -Va 在大包集群上可能耗时数分钟,超时属预期内降
 		// 级场景,返回 total_packages + note 而非错误。
 		if errors.Is(vaErr, context.DeadlineExceeded) || errors.Is(vaErr, context.Canceled) {
 			return SummaryResult{
 				TotalPackages: len(allPkgs),
-				Note:          "rpm -Va 超时或中断,差异统计不完整",
+				Note:          mergeNotes(noteA, "rpm -Va 超时或中断,差异统计不完整"),
 			}, nil
 		}
 		return SummaryResult{}, vaErr
@@ -514,6 +520,7 @@ func (s *service) Summary(ctx context.Context) (SummaryResult, error) {
 		TotalPackages:   len(allPkgs),
 		ChangedPackages: len(changedPkgs),
 		ChangedFiles:    diffCount,
+		Note:            mergeNotes(noteA, noteB),
 	}
 	// 填充 topN + more
 	if len(changedPkgs) > summaryDefaultTopN {
@@ -525,61 +532,87 @@ func (s *service) Summary(ctx context.Context) (SummaryResult, error) {
 	return res, nil
 }
 
-// collectAllPackagesIn 收集所有已安装包名(`rpm -qa --queryformat '%{NAME}\n'`)。
-func (s *service) collectAllPackages(ctx context.Context) ([]string, error) {
-	return s.collectAllPackagesIn(ctx)
-}
-
-func (s *service) collectAllPackagesIn(ctx context.Context) ([]string, error) {
+// collectAllPackages 收集所有已安装包 NAME(`rpm -qa --queryformat '%{NAME}\n'`),
+// 按首次出现去重:multilib/kernel 等同一 NAME 多实例会重复出现,不去重会让
+// TotalPackages 大于现实包种类数(Summary I2)。返回 rpm 非致命 note 供上游
+// 与其它源合并。
+func (s *service) collectAllPackages(ctx context.Context) ([]string, string, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.rpmTimeout)
 	defer cancel()
 	var pkgs []string
+	seen := make(map[string]bool)
 	err := s.run(execCtx, func(line []byte) bool {
 		pkg := strings.TrimSpace(string(line))
-		if pkg != "" {
+		if pkg != "" && !seen[pkg] {
+			seen[pkg] = true
 			pkgs = append(pkgs, pkg)
 		}
 		return true
-	}, "-qa", "--queryformat", "%{NAME}\n")
+	}, "-qa", "--queryformat", nameQueryFormat)
 	if err != nil {
-		return nil, err
+		note, fatal := handleExecError(err)
+		if fatal {
+			return nil, "", err
+		}
+		return pkgs, note, nil
 	}
-	return pkgs, nil
+	return pkgs, "", nil
 }
 
-// collectChangedPackages 通过 `rpm -Va` + `rpm -qf` 收集被改的包集合,写
-// 入传入的 map。
-func (s *service) collectChangedPackages(ctx context.Context, out map[string]struct{}) error {
+// collectChangedPackages 通过 `rpm -Va` + `rpm -qf --queryformat '%{NAME}\n'`
+// 收集被改的包集合,写入传入的 map;返回差异行总数与 rpm 的非致命 note。
+// -Va rc=1("报告差异")按 handleExecError 降级为 note 并继续,rc≥2 真故障上抛。
+func (s *service) collectChangedPackages(ctx context.Context, out map[string]struct{}) (int, string, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.rpmTimeout)
 	defer cancel()
 
-	seen := make(map[string]bool)
-	var uniquePaths []string
-	if err := s.run(execCtx, func(line []byte) bool {
+	var (
+		diffCount int
+		vaNote    string
+		seen      = make(map[string]bool)
+		paths     []string
+	)
+	err := s.run(execCtx, func(line []byte) bool {
 		path := extractPath(line)
-		if path != "" && !seen[path] {
+		if path == "" {
+			return true
+		}
+		diffCount++
+		if !seen[path] {
 			seen[path] = true
-			uniquePaths = append(uniquePaths, path)
+			paths = append(paths, path)
 		}
 		return true
-	}, "-Va"); err != nil {
-		return err
+	}, "-Va")
+	if err != nil {
+		note, fatal := handleExecError(err)
+		if fatal {
+			return 0, "", err
+		}
+		vaNote = note
 	}
 
-	for _, path := range uniquePaths {
+	for _, path := range paths {
 		qfCtx, qfCancel := context.WithTimeout(execCtx, s.rpmTimeout)
-		var owner []byte
+		var owners []string
 		_ = s.run(qfCtx, func(line []byte) bool {
-			owner = append([]byte(nil), line...)
-			return false
-		}, "-qf", path)
+			owner := strings.TrimSpace(string(line))
+			if owner != "" {
+				owners = append(owners, owner)
+			}
+			return true
+		}, "-qf", path, "--queryformat", nameQueryFormat)
 		qfCancel()
-		ownerStr := strings.TrimSpace(string(owner))
-		if ownerStr != "" && !strings.HasSuffix(ownerStr, "not owned") {
-			out[ownerStr] = struct{}{}
+		// multilib 同路径可能多 owner,全部纳入;无归属告警行(LC_ALL=C 下
+		// stdout 上的 "file X is not owned by any package")必须排除。
+		for _, owner := range owners {
+			if isUnownedMessage(owner) {
+				continue
+			}
+			out[owner] = struct{}{}
 		}
 	}
-	return nil
+	return diffCount, vaNote, nil
 }
 
 // extractPath 从 rpm verify 一行输出中提取 path(missing 与 9 字节矩阵两路
@@ -614,7 +647,8 @@ func pickTopN(set map[string]struct{}, n int) []string {
 	for k := range set {
 		all = append(all, k)
 	}
-	// sort.Strings 已隐式:用 strings.SortStable 兜底,避免引入 sort 包
+	// 手写插入排序等价于 sort.SliceStable(all, func(i, j int) bool { return all[i] < all[j] }),
+	// 仅作字典序排序,避免引入 sort 包。
 	for i := 1; i < len(all); i++ {
 		for j := i; j > 0 && all[j-1] > all[j]; j-- {
 			all[j-1], all[j] = all[j], all[j-1]
@@ -702,14 +736,6 @@ func parseVerifyLine(s string) (VerifyResult, bool) {
 		Type:  typ,
 		Flags: flags,
 	}, true
-}
-
-// isVerifyFlagChar 返回 b 是否是合法差异位字符;字符与语义映射为:S=size,
-// M=mode, 5=digest, D=device, L=symlink, U=user, G=group, T=mtime,
-// P=capabilities(部分发行版写作 'C',一并识别)。'?' 与 '.' 单独识别(未读/
-// 一致)。
-func isVerifyFlagChar(b byte) bool {
-	return strings.ContainsRune(verifyFlagChars, rune(b))
 }
 
 // decodeFlags 把 9 字节 flag 矩阵展开为 VerifyFlags。任何位为 '?' 视为
@@ -825,16 +851,16 @@ func runRPM(ctx context.Context, onLine func([]byte) bool, args ...string) error
 // checkStartupEnv 在 daemon 启动期探测 rpm 二进制可用性与 euid;rpm 缺失或
 // 非 root 时往 stderr 写一次性提示,工具调用时各自降级为 note(不崩)。
 // 主调用方是 main()。
+//
+// 部署态在 DynamicUser 下 euid != 0 但具备 AmbientCapabilities=CAP_DAC_READ_SEARCH
+// 时,代 valgrind 跳过 DAC 读检查可绕过 root-only 文件的 EACCES;此处仅告警
+// "非 root + 无 cap" 双不满足的硬降级,具备 cap 的部署仍是合规态。
 func checkStartupEnv() {
 	if _, err := exec.LookPath(rpmBinary); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: rpm 二进制不可用 (%v);工具将返回空结果 + note\n", "daedalus-integrity", err)
 		return
 	}
 	if os.Geteuid() != 0 {
-		fmt.Fprintf(os.Stderr, "%s: 非 root 运行;rpm -V 部分路径将因 EACCES 视为 missing,结果不完整\n", "daedalus-integrity")
+		fmt.Fprintf(os.Stderr, "%s: 非 root 运行;若未授予 CAP_DAC_READ_SEARCH,rpm -V 部分路径将因 EACCES 视为 missing,结果不完整\n", "daedalus-integrity")
 	}
 }
-
-// quietUnused 防止 strconv 警告:本实现里 strconv 暂未调用,保留以备后续
-// 范围/端口解析时使用。
-var _ = strconv.Itoa

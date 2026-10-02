@@ -2,11 +2,11 @@
 //
 // 提供 3 个 L0 工具:rpm_verify(rpm -V 差异解析)、rpm_unchanged(完全一致
 // 包列表)、rpm_summary(总体偏离统计),全部直 fork /usr/bin/rpm。零写入;
-// rpm 缺失或非 root 一律优雅降级为空集 + note。
+// rpm 缺失一律优雅降级为空集 + note;部署态在 DynamicUser 下若未授予
+// CAP_DAC_READ_SEARCH,部分 root-only 路径会因 EACCES 视为 missing。
 //
-// 安全边界:全部入参在拼 argv 前强制校验(见 integrity.go),再经绝对路径
-// argv 直发,绝不经过 sh -c。工具名与 manifest.tools 逐字一致(76 脚本构建
-// 期交叉核对 manifest ↔ 二进制 tools/list,漂移即构建失败)。
+// 安全边界:入参在拼 argv 前强制校验,绝对路径 argv 直发不走 sh -c;工具名
+// 与 manifest.tools 逐字一致(76 脚本构建期交叉核对,漂移即构建失败)。
 package main
 
 import (
@@ -98,7 +98,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "rpm_verify",
-		Description: "只读对比已安装文件与 rpm DB 记录,报告被改的文件(权限/属主/哈希/md5/大小/设备/mtime/symlink/capabilities 偏离)。\n\n参数:\n    package: 包名(可选,与 all 互斥;仅字母/数字/下划线/点/@/+/-)。\n    all: 全量校验所有已安装包(可选,与 package 互斥)。\n    limit: 返回条数上限(可选,缺省 1000,最大 10000)。\n    offset: 跳过前 N 条(可选,缺省 0)。\n\n返回:\n    {\"entries\": [{\"package\": \"...\", \"path\": \"...\", \"type\": \"c|d|l|r|g\", \"flags\": {...}}],\n     \"total_lines\": N, \"returned\": M, \"truncated\": bool, \"note\": \"...\"}。",
+		Description: "只读对比已安装文件与 rpm DB 记录,报告被改的文件(权限/属主/哈希/md5/大小/设备/mtime/symlink/capabilities 偏离)。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 文件做完整性校验(非 root,不获全部特权)。\n\n参数:\n    package: 包名(可选,与 all 互斥;仅字母/数字/下划线/点/@/+/-)。\n    all: 全量校验所有已安装包(可选,与 package 互斥)。\n    limit: 返回条数上限(可选,缺省 1000,最大 10000)。\n    offset: 跳过前 N 条(可选,缺省 0)。\n\n返回:\n    {\"entries\": [{\"package\": \"...\", \"path\": \"...\", \"type\": \"c|d|l|r|g\", \"flags\": {...}}],\n     \"total_lines\": N, \"returned\": M, \"truncated\": bool, \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -113,7 +113,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "rpm_unchanged",
-		Description: "只读返回与 rpm DB 完全一致的包列表(绝大多数包应命中)。\n\n参数:\n    package: 包名(可选,只检查该包;仅字母/数字/下划线/点/@/+/-)。\n    limit/offset: 分页(可选,同 rpm_verify)。\n\n返回:\n    {\"packages\": [\"bash\", ...], \"total_lines\": N, \"returned\": M, \"truncated\": bool, \"note\": \"...\"}。",
+		Description: "只读返回与 rpm DB 完全一致的包列表(绝大多数包应命中)。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 文件做完整性校验(非 root,不获全部特权)。\n\n参数:\n    package: 包名(可选,只检查该包;仅字母/数字/下划线/点/@/+/-)。\n    limit/offset: 分页(可选,同 rpm_verify)。\n\n返回:\n    {\"packages\": [\"bash\", ...], \"total_lines\": N, \"returned\": M, \"truncated\": bool, \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -127,7 +127,7 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "rpm_summary",
-		Description: "只读返回总体偏离统计:总包数、被改包数、被改文件数,以及被改包名前 50 个示例。\n\n返回:\n    {\"total_packages\": N, \"changed_packages\": M, \"changed_files\": K, \"changed_packages_top\": [...], \"changed_packages_more\": P, \"note\": \"...\"}。",
+		Description: "只读返回总体偏离统计:总包数、被改包数、被改文件数,以及被改包名前 50 个示例。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 文件做完整性校验(非 root,不获全部特权)。\n\n返回:\n    {\"total_packages\": N, \"changed_packages\": M, \"changed_files\": K, \"changed_packages_top\": [...], \"changed_packages_more\": P, \"note\": \"...\"}。",
 		InputSchema: noArgsSchema,
 		Annotations: annotations,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
