@@ -1,0 +1,20 @@
+           PID: 1057526 (deno)
+           UID: 0 (root)
+           GID: 0 (root)
+        Signal: 11 (SEGV)
+     Timestamp: Fri 2026-10-02 15:49:19 CST (2h 56min ago)
+  Command Line: deno run -A --env-file=.env src/modules/cli.ts serve
+    Executable: /usr/local/bin/deno
+ Control Group: /system.slice/docker-6c84628f6f98f20e1d98b09a5855231eee69629dc2d90f6baeb14b535c108a91.scope
+          Unit: docker-6c84628f6f98f20e1d98b09a5855231eee69629dc2d90f6baeb14b535c108a91.scope
+         Slice: system.slice
+       Boot ID: 7dd148b1209141129f3f1a5982351638
+    Machine ID: 7c530dd7c8124920bb72c2c62037c729
+      Hostname: 6c84628f6f98
+       Storage: /var/lib/systemd/coredump/core.deno.0.7dd148b1209141129f3f1a5982351638.1057526.1790927359000000.zst (inaccessible)
+       Message: Process 1057526 (deno) of user 0 dumped core.
+
+                Stack trace of thread 26:
+                #0  0x00007fde52d3b50f n/a (/usr/lib/x86_64-linux-gnu/libc.so.6 + 0x2650f)
+                #1  0x0000562d93a90b90 n/a (n/a + 0x0)
+                ELF object binary architecture: AMD x86-64

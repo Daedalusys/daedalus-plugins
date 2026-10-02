@@ -1,0 +1,12 @@
+{
+  "tool.boot_blame.title": "Boot Time Blame",
+  "tool.boot_blame.description": "Read-only list of per-unit boot timing parsed from `systemd-analyze blame`. Returns up to 50 entries with raw time string and parsed seconds.",
+  "tool.boot_critical_chain.title": "Critical Startup Chain",
+  "tool.boot_critical_chain.description": "Read-only critical startup dependency chain from `systemd-analyze critical-chain [unit]`. Each line exposes unit, depth, activation (@) and elapsed (+) marks.",
+  "tool.last_boot_log.title": "Last Boot Journal",
+  "tool.last_boot_log.description": "Read-only latest journal entries from previous boot (journalctl -b -1). Optional priority filter (0..7 or emerg..debug).",
+  "tool.coredumps_list.title": "Kernel Coredump List",
+  "tool.coredumps_list.description": "Read-only coredump inventory from `coredumpctl list --json=short`. Includes time, pid, uid/gid, signal, coredump file state (present / inaccessible), executable path, and size in bytes. Inaccessible entries keep a note but null size.",
+  "tool.coredump_info.title": "Kernel Coredump Detail",
+  "tool.coredump_info.description": "Read-only per-coredump detail from `coredumpctl info <pid>`. Fields map (parsed Key: Value pairs) plus raw output (stack trace included). Raw output is truncated at 64KiB."
+}
