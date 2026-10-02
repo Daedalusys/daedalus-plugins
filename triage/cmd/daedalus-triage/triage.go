@@ -193,12 +193,17 @@ func (a LastBootLogArgs) Validate() error {
 	return fmt.Errorf("priority 非法: %q(应为 0..7 或 emerg..debug)", *a.Priority)
 }
 
-// ValidateCoredumpID 校验 coredump_info 的 coredump_id：仅接受正整数 PID，
-// 且限 int32 范围（Linux PID 上限）。coredumpctl info 也接受 "@<timestamp>"
-// 或正则匹配式，但两者攻击面更广；本任务面严格限于正整数 PID。
+// ValidateCoredumpID 校验 coredump_info 的 coredump_id：仅接受纯数字正整数
+// PID，且限 int32 范围（Linux PID 上限）。不接受 "@<timestamp>"、进程名、
+// 可执行路径等 coredumpctl 支持的其他匹配式——面越窄越安全。
 func ValidateCoredumpID(id string) error {
 	if id == "" {
 		return errors.New("coredump_id 不能为空")
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("非法 coredump_id: %q(应为正整数 PID,int32 范围)", id)
+		}
 	}
 	n, err := strconv.ParseInt(id, 10, 32)
 	if err != nil || n <= 0 {
@@ -407,7 +412,10 @@ func runCLI(ctx context.Context, bin string, onLine func([]byte) bool, args ...s
 	if err != nil {
 		return fmt.Errorf("%s stdout 管道失败: %w", bin, err)
 	}
+	// stderr 必须在 Start 之前接好：os/exec 在 Start 时即接好子进程 stderr
+	// 并启动 copy goroutine，之后再赋值是 no-op，stderr 永远为空。
 	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
 		// 区分二进制不存在（ENOENT）与其他启动错误：ENOENT 走 isMissingBinary
@@ -417,8 +425,6 @@ func runCLI(ctx context.Context, bin string, onLine func([]byte) bool, args ...s
 		}
 		return fmt.Errorf("%s 启动失败: %w", bin, err)
 	}
-
-	cmd.Stderr = &stderr
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -565,22 +571,19 @@ func parseJournalEntry(line []byte) (LastBootLogEntry, bool) {
 	}, true
 }
 
-// parseCoredumpsJSON 把 coredumpctl list --json=short 的所有行合并为单一
-// JSON 数组后解析。本机实测每行一条独立对象，因此 "[" + \n + "]" 拼接即可。
-// 也兼容单行数组输出。
+// parseCoredumpsJSON 解析 coredumpctl list --json=short 的 JSON 数组输出
+// （实测单行数组）。非数组输出一律报明确错误，不做 JSONL 等猜测性回退。
 func parseCoredumpsJSON(lines [][]byte) ([]CoredumpEntry, error) {
 	if len(lines) == 0 {
 		return []CoredumpEntry{}, nil
 	}
 	joined := bytes.Join(lines, []byte("\n"))
 	trimmed := bytes.TrimSpace(joined)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+	if len(trimmed) == 0 {
 		return []CoredumpEntry{}, nil
 	}
-	// 兼容两种输出形态：单行数组 vs 多行 JSONL。
 	if trimmed[0] != '[' {
-		// JSONL 形态：包成数组再解。
-		trimmed = append([]byte{'['}, append(trimmed, ']')...)
+		return nil, fmt.Errorf("期望 JSON 数组，实际输出: %.80q", trimmed)
 	}
 	var raw []map[string]any
 	if err := json.Unmarshal(trimmed, &raw); err != nil {

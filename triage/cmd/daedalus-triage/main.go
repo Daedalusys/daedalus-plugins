@@ -121,11 +121,11 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "last_boot_log",
-		Description: "只读返回上一次启动(-b -1)的最近日志。\n\n直 fork `journalctl -b -1 -n 50 -o json`,可选按 priority 过滤。\n\n参数：\n    priority: 0..7 或 emerg..debug(可选)。\n\n返回：\n    {\"entries\": [{\"timestamp\",\"priority\",\"unit\",\"message\"}], \"note\": \"...\"}。",
+		Description: "只读返回上一次启动(-b -1)的最近日志。\n\n直 fork `journalctl -b -1 -n 50 -o json`,可选按 priority 过滤。\n\n参数：\n    priority: 字符串,emerg/alert/crit/err/warning/notice/info/debug 或 0..7(可选)。\n\n返回：\n    {\"entries\": [{\"timestamp\",\"priority\",\"unit\",\"message\"}], \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"priority": {Type: "string", Description: "优先级 0..7 或 emerg..debug(可选)。"},
+				"priority": {Type: "string", Description: "字符串:emerg/alert/crit/err/warning/notice/info/debug 或 0..7(可选)。"},
 			},
 		},
 		Annotations: annotations,
@@ -148,11 +148,11 @@ func newServer(svc *service) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "coredump_info",
-		Description: "只读读取单条内核转储详情(coredumpctl info <pid>)。\n\n直 fork `coredumpctl info <coredump_id>`,按 'Key: Value' 行解析为扁平 map,同时保留 raw 原文(含 stack trace),超过 64KiB 截断。无匹配返回空字段 + note '无内核转储记录'。\n\n参数：\n    coredump_id: 正整数 PID(必填)。\n\n返回：\n    {\"coredump_id\":\"...\", \"fields\":{\"PID\":\"...\"}, \"raw\":\"...\", \"note\": \"...\"}。",
+		Description: "只读读取单条内核转储详情(coredumpctl info <pid>)。\n\n直 fork `coredumpctl info <coredump_id>`,按 'Key: Value' 行解析为扁平 map,同时保留 raw 原文(含 stack trace),超过 64KiB 截断。无匹配返回空字段 + note '无内核转储记录'。\n\n参数：\n    coredump_id: 字符串,仅限正整数 PID(必填);不接受进程名、可执行路径、@时间戳等 coredumpctl 其他匹配式。\n\n返回：\n    {\"coredump_id\":\"...\", \"fields\":{\"PID\":\"...\"}, \"raw\":\"...\", \"note\": \"...\"}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"coredump_id": {Type: "string", Description: "正整数 PID(必填)。"},
+				"coredump_id": {Type: "string", Description: "正整数 PID(必填);不接受进程名、路径、@时间戳等。"},
 			},
 			Required: []string{"coredump_id"},
 		},
