@@ -1,0 +1,8 @@
+{
+  "tool.avc_recent.title": "AVC Recent",
+  "tool.avc_recent.description": "Read-only list of recent SELinux AVC/USER_AVC denial events parsed from /var/log/audit/audit.log via ausearch. Returns events in structured form (timestamp, event_id, scontext, tcontext, tclass, denied permission, comm). In deployment, CAP_DAC_READ_SEARCH lets it read root-only /var/log/audit (non-root, without full privileges).",
+  "tool.avc_explain.title": "AVC Explain",
+  "tool.avc_explain.description": "Read-only explanation of a single SELinux AVC denial event (by audit event id) using audit2why / audit2allow --explain to give the reason and a suggested policy fix. Never modifies SELinux policy. In deployment, CAP_DAC_READ_SEARCH lets it read root-only /var/log/audit (non-root, without full privileges).",
+  "tool.avc_summary.title": "AVC Summary",
+  "tool.avc_summary.description": "Read-only aggregate summary of recent SELinux AVC/USER_AVC denials grouped by (scontext, tclass, comm, denied permission), with per-bucket counts and total. In deployment, CAP_DAC_READ_SEARCH lets it read root-only /var/log/audit (non-root, without full privileges)."
+}
