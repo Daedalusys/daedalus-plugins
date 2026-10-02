@@ -1,0 +1,14 @@
+{
+  "tool.hwmon_temperatures.title": "硬件温度传感器",
+  "tool.hwmon_temperatures.description": "只读列出全部 hwmon 温度传感器(temp*_input,毫摄氏度→摄氏度)。",
+  "tool.hwmon_fans.title": "硬件风扇转速",
+  "tool.hwmon_fans.description": "只读列出全部风扇转速(fan*_input,RPM)。",
+  "tool.hwmon_voltages.title": "硬件电压",
+  "tool.hwmon_voltages.description": "只读列出全部 hwmon 电压(in*_input,毫伏→伏)。",
+  "tool.hwmon_power.title": "RAPL 包级功率",
+  "tool.hwmon_power.description": "只读 RAPL 包级平均功率(瓦),基于 energy_uj 与上一次读数求差;首次调用建立基线。",
+  "tool.hwmon_battery.title": "电池状态",
+  "tool.hwmon_battery.description": "只读 BAT0 状态与剩余容量(百分比);目录缺失返回空集。",
+  "tool.hwmon_thermal_zones.title": "热区温度",
+  "tool.hwmon_thermal_zones.description": "只读列出全部 thermal_zone*(毫摄氏度→摄氏度)。"
+}
