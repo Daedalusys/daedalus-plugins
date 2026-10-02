@@ -1,0 +1,37 @@
+{
+  "id": "daedalus.triage",
+  "name": "Daedalus Boot & Crash Triage",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-triage",
+  "tools": [
+    "boot_blame",
+    "boot_critical_chain",
+    "last_boot_log",
+    "coredumps_list",
+    "coredump_info"
+  ],
+  "permissions": {
+    "read": [
+      "/var/lib/systemd/coredump",
+      "/var/log/journal",
+      "/run/log/journal"
+    ],
+    "write": [],
+    "run": [
+      "/usr/bin/systemd-analyze",
+      "/usr/bin/coredumpctl",
+      "/usr/bin/journalctl"
+    ]
+  },
+  "i18n": [
+    "en_US",
+    "zh_CN"
+  ]
+}
