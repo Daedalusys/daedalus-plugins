@@ -12,10 +12,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -455,6 +457,58 @@ func TestStatus_StderrPropagatedToError(t *testing.T) {
 	}
 }
 
+// writeFakeScript 写一个可执行的 shell 假脚本到 tmp 目录,返回绝对路径;
+// 模仿 avc 的同名函数(承接 avc 的真 fork 回归范式),不跨插件 import。
+func writeFakeScript(t *testing.T, name, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("写假脚本失败: %v", err)
+	}
+	return path
+}
+
+// TestExecHelper_RealStderrBeforeStart 真 fork:子进程 stdout+stderr 走真管道,
+// stderr 必须进 execError.Stderr;若有人把 cmd.Stderr = &stderr 挪到 cmd.Start()
+// 之后,Stderr 必空、本测试失败 — 即锁住"stderr 在 Start 前接"行为。
+func TestExecHelper_RealStderrBeforeStart(t *testing.T) {
+	path := writeFakeScript(t, "fake-gpu-cli", "#!/bin/sh\necho GPU_STDERR_MARKER 1>&2\nexit 1\n")
+	got := execHelper(context.Background(), path, nil, func([]byte) bool { return true }, "--query-gpu=x")
+	if got == nil {
+		t.Fatal("rc=1 应返回 execError")
+	}
+	var ee *execError
+	if !errors.As(got, &ee) {
+		t.Fatalf("err 应为 *execError, got %T: %v", got, got)
+	}
+	if ee.Code != 1 {
+		t.Errorf("Code=%d, want 1", ee.Code)
+	}
+	if !strings.Contains(ee.Stderr, "GPU_STDERR_MARKER") {
+		t.Errorf("Stderr 应含真子进程 stderr 内容: %q", ee.Stderr)
+	}
+}
+
+// TestStatus_RealStderrPropagated 真 fork 贯通到 Status:厂商 CLI rc=2 时,
+// handleVendorError 判 fatal,stderr 经 wrap 出现在 err.Error();若 fakeRunner
+// 仅是替 execHelper,无法覆盖真 fork 顺序错位。
+func TestStatus_RealStderrPropagated(t *testing.T) {
+	path := writeFakeScript(t, "fake-nvidia-smi", "#!/bin/sh\necho GPU_STDERR_MARKER 1>&2\nexit 2\n")
+	oldBin := nvidiaSmiBin
+	nvidiaSmiBin = path
+	t.Cleanup(func() { nvidiaSmiBin = oldBin })
+
+	svc := newService()
+	svc.probe = func(bin string) bool { return bin == path }
+	_, err := svc.Status(context.Background(), gpuSelectArgs{})
+	if err == nil {
+		t.Fatal("rc=2 应为致命错误")
+	}
+	if !strings.Contains(err.Error(), "GPU_STDERR_MARKER") {
+		t.Errorf("Status 错误链未带真子进程 stderr: %v", err)
+	}
+}
+
 // TestCollect_NvidiaNoDevicesProducesEmptyList rc=1+"No devices" → 空集 + note,不报错。
 func TestCollect_NvidiaNoDevicesProducesEmptyList(t *testing.T) {
 	svc, _ := newFakeService(fakeResult{
@@ -581,6 +635,28 @@ func TestProcesses_FilterDropsAMD(t *testing.T) {
 	}
 }
 
+// TestProcesses_FilterUnmappedNote 指定 gpu 过滤掉 GPUIndices 为空的 AMD/Intel
+// 进程时,note 必须写明被过滤数量与原因,避免 LLM 客户端误以为"系统无 AMD/Intel
+// 进程"。
+func TestProcesses_FilterUnmappedNote(t *testing.T) {
+	svc, _ := newFakeService(amdFixtureResults(t)...)
+	svc.probe = func(bin string) bool { return bin == rocmSmiBin }
+	got, err := svc.Processes(context.Background(), gpuSelectArgs{GPU: ii(0)})
+	if err != nil {
+		t.Fatalf("Processes: %v", err)
+	}
+	if len(got.Processes) != 0 {
+		t.Errorf("AMD 进程应被过滤,got %v", got.Processes)
+	}
+	if !strings.Contains(got.Note, "未提供 GPU 索引") {
+		t.Errorf("note 应写明被过滤的未索引进程, got %q", got.Note)
+	}
+	// 数量必须是夹具里的真实进程数(2)。
+	if !strings.Contains(got.Note, "2 个进程") {
+		t.Errorf("note 应含被过滤的具体数量 2, got %q", got.Note)
+	}
+}
+
 // TestMemory_EmptyIsArrayNotNil 全缺失时 devices 必须显式 []。
 func TestMemory_EmptyIsArrayNotNil(t *testing.T) {
 	svc := &service{run: (&fakeRunner{}).run, probe: func(string) bool { return false }, timeout: gpuTimeout}
@@ -590,6 +666,32 @@ func TestMemory_EmptyIsArrayNotNil(t *testing.T) {
 	}
 	if got.Devices == nil {
 		t.Error("Devices 为 nil,应为 []")
+	}
+	if got.Note == "" {
+		t.Error("全缺失应有 note")
+	}
+}
+
+// TestStatus_AllAbsentEmptyArray 全厂商缺失时 gpus 必须显式 [] 而非 nil,
+// 保证 wire 形态 "gpus":[] 与 List/Processes/Memory 一致。
+func TestStatus_AllAbsentEmptyArray(t *testing.T) {
+	svc := &service{run: (&fakeRunner{}).run, probe: func(string) bool { return false }, timeout: gpuTimeout}
+	got, err := svc.Status(context.Background(), gpuSelectArgs{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.GPUs == nil {
+		t.Error("GPUs 为 nil,应为 []")
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"gpus":[]`) {
+		t.Errorf("wire 形态应为 \"gpus\":[], got %s", b)
+	}
+	if strings.Contains(string(b), `"gpus":null`) {
+		t.Errorf("wire 形态不应为 \"gpus\":null, got %s", b)
 	}
 	if got.Note == "" {
 		t.Error("全缺失应有 note")
