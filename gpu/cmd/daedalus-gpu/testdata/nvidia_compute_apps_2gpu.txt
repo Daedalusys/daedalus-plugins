@@ -1,0 +1,3 @@
+GPU-aaaa-bbbb, 4242, /usr/bin/python3, 1024
+GPU-cccc-dddd, 4243, /usr/bin/ollama, 8192
+GPU-aaaa-bbbb, 5000, /usr/bin/Xorg, 256
