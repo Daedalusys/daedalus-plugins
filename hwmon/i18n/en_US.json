@@ -2,7 +2,7 @@
   "tool.hwmon_temperatures.title": "Hardware Temperatures",
   "tool.hwmon_temperatures.description": "Read-only listing of every hwmon temperature sensor (temp*_input, milli-celsius → celsius).",
   "tool.hwmon_fans.title": "Hardware Fan Speeds",
-  "tool.hwmon_fans.description": "Read-only listing of every hwmon fan speed (fan*__input, RPM).",
+  "tool.hwmon_fans.description": "Read-only listing of every hwmon fan speed (fan*_input, RPM).",
   "tool.hwmon_voltages.title": "Hardware Voltages",
   "tool.hwmon_voltages.description": "Read-only listing of every hwmon voltage (in*_input, milli-volt → volts).",
   "tool.hwmon_power.title": "RAPL Package Power",
