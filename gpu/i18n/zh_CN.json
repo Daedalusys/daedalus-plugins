@@ -1,0 +1,10 @@
+{
+  "tool.gpu_list.title": "列出本机 GPU",
+  "tool.gpu_list.description": "只读列出本机 GPU(厂商 / 型号 / 驱动)。按 NVIDIA (nvidia-smi) / AMD (rocm-smi) / Intel (intel_gpu_top) 顺序探测;可选依赖缺失的厂商跳过,全部缺失时返回空集 + note,不报错。",
+  "tool.gpu_status.title": "GPU 状态",
+  "tool.gpu_status.description": "只读 GPU 利用率 / 显存 / 温度 / 功耗(全部测量字段)。跨厂商同名字段语义不同(NVIDIA=SM%,AMD=GFX%,Intel=Render/3D 繁忙度;详见工具描述)。",
+  "tool.gpu_processes.title": "GPU 进程",
+  "tool.gpu_processes.description": "只读列出当前占用 GPU 的进程(PID / 进程名 / 占用显存)。NVIDIA 给出精确 PID→GPU 映射;AMD rocm-smi --showpids 只给占用 GPU 数量,不给索引;Intel intel_gpu_top clients 只给引擎繁忙度,未给显存与 GPU 索引。",
+  "tool.gpu_memory.title": "GPU 显存",
+  "tool.gpu_memory.description": "只读每 GPU 显存详情(总/已用/空闲,MiB)+ 可映射到该 GPU 的进程列表。AMD 原生单位是字节(B),内部已 ÷ 1024² 换算 MiB;Intel intel_gpu_top 未暴露 VRAM 总量,has_memory=false。"
+}
