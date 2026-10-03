@@ -1,0 +1,3 @@
+{"__REALTIME_TIMESTAMP":"1767268800123456","PRIORITY":"6","_SYSTEMD_UNIT":"mihomo.service","SYSLOG_IDENTIFIER":"mihomo","_PID":"1037","MESSAGE":"Starting mihomo..."}
+{"__REALTIME_TIMESTAMP":"1767268800234567","PRIORITY":"4","_SYSTEMD_UNIT":"mihomo.service","SYSLOG_IDENTIFIER":"mihomo","_PID":"1037","MESSAGE":"warn: config deprecated option"}
+{"__REALTIME_TIMESTAMP":"1767268800345678","PRIORITY":"3","_SYSTEMD_UNIT":"docker.service","SYSLOG_IDENTIFIER":"dockerd","_PID":"1042","MESSAGE":"failed to start container"}

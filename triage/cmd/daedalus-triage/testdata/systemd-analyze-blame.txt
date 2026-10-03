@@ -1,0 +1,15 @@
+14.636s sys-module-fuse.device
+14.570s sys-devices-platform-serial8250-tty-ttyS1.device
+14.570s dev-ttyS1.device
+14.568s sys-devices-platform-serial8250-tty-ttyS0.device
+14.568s dev-ttyS0.device
+13.303s multi-user.target
+13.272s network.target
+8.360s docker.service
+5.296s firewalld.service
+4.137s containerd.service
+2.986s polkit.service
+1.254s dbus-broker.service
+0.428s NetworkManager.service
+0.210s systemd-journald.service
+0.145s sshd.service
