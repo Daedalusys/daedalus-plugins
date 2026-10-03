@@ -1,0 +1,8 @@
+{
+  "tool.avc_recent.title": "SELinux AVC 近期拒绝",
+  "tool.avc_recent.description": "只读列出近期 SELinux AVC/USER_AVC 拒绝事件(经 ausearch 解析 /var/log/audit/audit.log),返回结构化字段(时间戳、event_id、scontext、tcontext、tclass、被拒权限、comm)。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 的 /var/log/audit(非 root,不获全部特权)。",
+  "tool.avc_explain.title": "SELinux AVC 原因解释",
+  "tool.avc_explain.description": "只读解释单条 SELinux AVC 拒绝事件(按审计 event_id),经 audit2why / audit2allow --explain 给出被拒原因与建议的策略修复,绝不修改 SELinux 策略。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 的 /var/log/audit(非 root,不获全部特权)。",
+  "tool.avc_summary.title": "SELinux AVC 汇总统计",
+  "tool.avc_summary.description": "只读汇总近期 SELinux AVC/USER_AVC 拒绝,按(scontext、tclass、comm、被拒权限)分组计数,并给出总数。部署态经 CAP_DAC_READ_SEARCH 可读 root-only 的 /var/log/audit(非 root,不获全部特权)。"
+}

@@ -1,0 +1,9 @@
+----
+time->Tue Nov  7 00:13:20 2023
+type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" name="shadow" dev="sda1" ino=12345 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0
+----
+time->Tue Nov  7 00:13:21 2023
+type=AVC msg=audit(1699287201.456:43): avc:  denied  { write } for  pid=1235 comm="nginx" name="passwd" dev="sda1" ino=12346 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0
+----
+time->Tue Nov  7 00:13:22 2023
+type=USER_AVC msg=audit(1699287202.789:44): avc:  denied  { connect } for  pid=1236 comm="curl" path="/var/log/foo" scontext=user_u:user_r:user_t:s0 tcontext=system_u:object_r:auditd_log_t:s0 tclass=tcp_socket permissive=0

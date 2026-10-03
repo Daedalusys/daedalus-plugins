@@ -1,0 +1,6 @@
+type=AVC msg=audit(1699287200.123:42): avc:  denied  { read } for  pid=1234 comm="httpd" name="shadow" dev="sda1" ino=12345 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0
+
+	Was caused by:
+		Missing type enforcement (TE) allow rule.
+
+		You can use audit2allow to generate a loadable module to allow this access.
