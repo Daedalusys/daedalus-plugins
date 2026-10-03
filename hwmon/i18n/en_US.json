@@ -1,0 +1,14 @@
+{
+  "tool.hwmon_temperatures.title": "Hardware Temperatures",
+  "tool.hwmon_temperatures.description": "Read-only listing of every hwmon temperature sensor (temp*_input, milli-celsius → celsius).",
+  "tool.hwmon_fans.title": "Hardware Fan Speeds",
+  "tool.hwmon_fans.description": "Read-only listing of every hwmon fan speed (fan*_input, RPM).",
+  "tool.hwmon_voltages.title": "Hardware Voltages",
+  "tool.hwmon_voltages.description": "Read-only listing of every hwmon voltage (in*_input, milli-volt → volts).",
+  "tool.hwmon_power.title": "RAPL Package Power",
+  "tool.hwmon_power.description": "Read-only RAPL package average power (watts) from energy_uj delta vs. previous sample; first call establishes baseline.",
+  "tool.hwmon_battery.title": "Battery Status",
+  "tool.hwmon_battery.description": "Read-only BAT0 status and capacity; missing battery returns empty list.",
+  "tool.hwmon_thermal_zones.title": "Thermal Zones",
+  "tool.hwmon_thermal_zones.description": "Read-only listing of every thermal_zone* (milli-celsius → celsius)."
+}
