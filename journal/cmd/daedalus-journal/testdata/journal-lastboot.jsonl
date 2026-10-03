@@ -1,0 +1,2 @@
+{"__REALTIME_TIMESTAMP":"1767273500000000","PRIORITY":"6","_SYSTEMD_UNIT":"systemd-journald.service","SYSLOG_IDENTIFIER":"systemd-journald","_PID":"1","MESSAGE":"journal started"}
+{"__REALTIME_TIMESTAMP":"1767273505123456","PRIORITY":"6","_SYSTEMD_UNIT":"sshd.service","SYSLOG_IDENTIFIER":"sshd","_PID":"900","MESSAGE":"server listening on 0.0.0.0 port 22"}

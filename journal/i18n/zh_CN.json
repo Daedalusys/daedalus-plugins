@@ -1,0 +1,8 @@
+{
+  "tool.journal_query.title": "日志结构化查询",
+  "tool.journal_query.description": "只读结构化查询 journald 日志(journalctl -o json),支持按单元、时间窗、优先级、正则与条数过滤。",
+  "tool.journal_follow.title": "日志有界订阅",
+  "tool.journal_follow.description": "有界订阅 journald 日志(journalctl --follow -o json),直到 1000 条或 30 秒上限,返回已收集批量。",
+  "tool.journal_last_boot.title": "上次启动日志",
+  "tool.journal_last_boot.description": "只读返回上一次启动(-b -1)的最近 50 条 journald 记录(journalctl -o json)。"
+}
