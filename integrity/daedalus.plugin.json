@@ -1,0 +1,33 @@
+{
+  "id": "daedalus.integrity",
+  "name": "Daedalus Integrity Verification",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-integrity",
+  "tools": [
+    "rpm_verify",
+    "rpm_unchanged",
+    "rpm_summary"
+  ],
+  "permissions": {
+    "read": [
+      "/var/lib/rpm",
+      "/var/lib/rpm-routines.txt",
+      "/var/log"
+    ],
+    "write": [],
+    "run": [
+      "/usr/bin/rpm"
+    ]
+  },
+  "i18n": [
+    "en_US",
+    "zh_CN"
+  ]
+}

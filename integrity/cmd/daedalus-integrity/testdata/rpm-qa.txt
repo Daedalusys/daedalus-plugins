@@ -1,0 +1,6 @@
+bash
+coreutils
+dnf
+filesystem
+glibc
+rpm
