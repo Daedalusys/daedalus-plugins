@@ -1,0 +1,27 @@
+# daedalus-fs 注入测试夹具:白名单收缩为仅 /tmp,
+# 证明 [fs].allowed_dirs 逐字进入 pathguard(其余键满足 fail-closed 校验)。
+[shell]
+allowed_commands = ["ls"]
+binary_dirs = ["/usr/bin"]
+allowed_path_prefixes = ["/tmp"]
+blocked_paths = ["/root"]
+clean_env = { PATH = "/usr/bin:/bin", LANG = "C" }
+timeout_ms = 1000
+
+[fs]
+allowed_dirs = ["/tmp"]
+
+[audit]
+log_path = "/tmp/daedalus-fs-policy-test-audit.jsonl"
+
+# [objectmodel] 为 fail-closed 必需节:补最小合法值使夹具整体通过校验。
+[objectmodel]
+enabled_kinds = ["service"]
+
+# [blueprints] 为 fail-closed 必需节:值与主 policy.toml 逐字一致,
+# 使夹具整体通过校验(TestPolicyInjection_*)。
+[blueprints]
+output_dirs = ["/etc/nginx/conf.d", "/etc/haproxy", "/etc/postgresql", "/etc/redis"]
+post_check_commands = ["nginx", "haproxy", "psql", "redis-cli", "sudo"]
+reload_services = ["nginx", "haproxy", "postgresql", "redis"]
+secret_sources = ["kwallet", "credstore"]

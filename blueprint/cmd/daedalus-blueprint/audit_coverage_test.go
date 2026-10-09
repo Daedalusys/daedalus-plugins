@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/Daedalusys/daedalus-sdk/audit"
-	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 type auditEntry struct {
@@ -139,7 +139,7 @@ func TestAudit_ApplyEveryGateAppendsOneEntry(t *testing.T) {
 		applyAuditCase(t, "denied", func(t *testing.T, a *app) map[string]any {
 			planID, token := seedApplyPlan(t, a, "nginx-vhost")
 			p := reseedPlan(t, a, planID)
-			p.Token = blueprint.ConfirmToken{}
+			p.Token = confirmation.ConfirmToken{}
 			a.plans.put(planID, p)
 			return map[string]any{"name": "nginx-vhost", "plan_id": planID, "confirm_token": token}
 		}, nil)

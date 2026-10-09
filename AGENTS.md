@@ -68,7 +68,9 @@ daedalus-plugins/
 | `sysinfo/` | `daedalus.sysinfo` | `os_release` / `hardware_info` / `network_status` | `sysinfo` | OS/hardware/network 只读探测 |
 | `service/` | `daedalus.service` | `service.query` / `service.list` | `objectmodel`、`state`、`dirs` | systemd 单元只读观测 — **不是** systemd 服务,也不改服务状态(走 `daedalus-tx`) |
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy` (post_check 钩子) | 6 参数化配置蓝图 (nginx/postgres/redis/haproxy) 渲染/应用 |
-| `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.disk-clean`) |
+| `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件 + 重复文件只读扫描 (L0) — **不是** 删除工具(删除走 `daedalus.diskclean`) |
+| `diskclean/` | `daedalus.diskclean` | `disk_scan` / `disk_estimate` / `disk_explain` / `disk_clean` | `confirmation`, `pathguard` | 磁盘清理(扫描 + 显式 confirm_token + 走 daedalus-tx `disk.clean` 适配器;`pathguard.ValidateWritePath` 二档) — **不是** 系统级包管理(包变更走 `daedalus-tx` `package.set`) |
+| `organize/` | `daedalus.organize` | `organize_plan` / `organize_preview` / `organize_apply` | `confirmation`, `pathguard`, `policy` | 按规则文件整理(by_type/by_date/by_size/by_ext):plan 生成 confirm_token + 冲突列表,preview 解析 rename/skip/abort,apply 经 daedalus-tx `organize.move` 适配器事务性 os.Rename — **不是** 任意目录重排(白名单 `pathguard.ValidateWritePath` 二档),也不是删除(删除走 `daedalus.diskclean`) |
 | `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图 (L0, 游标分页) — **不是** 重放执行(那是 030 workflow),也不做链完整性校验(`daedalus-audit verify`) |
 | `proc/` | `daedalus.proc` | `proc_list` / `proc_tree` / `proc_fds` / `proc_listen` / `proc_cgroup` | —(直读 `/proc`) | 进程/fd/监听端口/cgroup 只读侦察 (L0, 零 exec) — **不是** 进程控制(kill/signal/renice 走 `daedalus-tx`) |
 

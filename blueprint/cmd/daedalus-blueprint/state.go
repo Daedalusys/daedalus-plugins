@@ -19,6 +19,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 // compiledBlueprint 把一个 *blueprint.Blueprint 与其预编译产物绑定在一起;
@@ -116,10 +117,10 @@ type renderedPlan struct {
 	Params   map[string]any
 	Rendered string
 	Target   string
-	Token    blueprint.ConfirmToken
+	Token    confirmation.ConfirmToken
 	// RemoveToken 是 apply 成功后为该 plan 生成的 remove 确认令牌;校验时比对
 	// plan store 中存下的令牌而非任意非空串。
-	RemoveToken blueprint.ConfirmToken
+	RemoveToken confirmation.ConfirmToken
 	// Applied 标记该 plan 是否已成功 apply;remove 用它判断"已应用",不用
 	// 会消费令牌的 VerifyConfirmToken 做只读探测。
 	Applied bool

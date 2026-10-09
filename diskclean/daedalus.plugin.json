@@ -1,0 +1,40 @@
+{
+  "id": "daedalus.diskclean",
+  "name": "Daedalus Disk Cleanup (Cache / Journal / Coredump / Old Kernel)",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "Apache-2.0",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-diskclean",
+  "tools": [
+    "disk_scan",
+    "disk_estimate",
+    "disk_explain",
+    "disk_clean"
+  ],
+  "permissions": {
+    "read": [
+      "/var/log/journal",
+      "/var/cache/dnf",
+      "/var/cache/PackageKit",
+      "/var/lib/systemd/coredump",
+      "/var/tmp",
+      "/home",
+      "/proc",
+      "/var/log"
+    ],
+    "write": [
+      "/var/log/journal",
+      "/var/cache/dnf",
+      "/var/cache/PackageKit",
+      "/var/lib/systemd/coredump",
+      "/var/tmp",
+      "/home"
+    ]
+  },
+  "i18n": ["en_US", "zh_CN"]
+}
