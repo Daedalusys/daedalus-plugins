@@ -1,2 +1,0 @@
-0, GPU-aaaa-bbbb, NVIDIA GeForce RTX 4090, 535.86.10, 45, 12, 24564, 1234, 23330, 65.32
-1, GPU-cccc-dddd, NVIDIA GeForce RTX 4090, 535.86.10, 50, 0, 24564, 0, 24564, [N/A]

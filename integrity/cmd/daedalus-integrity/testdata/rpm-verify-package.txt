@@ -1,2 +1,0 @@
-S.5....T.  c /etc/dnf/dnf.conf
-missing     /usr/libexec/missing-file (Permission denied)

@@ -1,8 +1,0 @@
-{
-  "tool.journal_query.title": "Journal Query",
-  "tool.journal_query.description": "Read-only structured query of journald logs (journalctl -o json) by unit, time window, priority, regex and count.",
-  "tool.journal_follow.title": "Journal Follow",
-  "tool.journal_follow.description": "Bounded journald subscription (journalctl --follow -o json) until 1000 entries or 30 seconds, returning the collected batch.",
-  "tool.journal_last_boot.title": "Last Boot Log",
-  "tool.journal_last_boot.description": "Read-only last 50 journald entries from the previous boot (journalctl -b -1 -o json)."
-}
