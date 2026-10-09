@@ -1,8 +1,0 @@
-{
-  "tool.search_files.title": "索引文件搜索",
-  "tool.search_files.description": "只读文件搜索,基于 KDE Baloo 索引器。返回匹配 `query` 的 `[{url, path, mimetype, size, mtime}]`。可选过滤:`dir`(限定目录)、`mimetype`(如 `text/plain`;作为 Baloo 查询语言 `type:` 前缀并入 query,由索引侧生效)、`since`/`until`(RFC3339 修改时间窗口)、`size_min`/`size_max`(字节),时间/大小过滤在 Baloo 返回后由客户端侧二次筛选。会话 D-Bus 上的 `org.kde.baloo` 探测仅作 note 上下文(advisory),即便 D-Bus 不可达也仍尝试 `baloosearch` fork(它直读 Baloo sqlite,不依赖 D-Bus);仅当 `baloosearch` 缺失或执行出错才返回空集 + 说明 note,不报错。",
-  "tool.search_content.title": "全文内容搜索",
-  "tool.search_content.description": "只读全文搜索,基于 KDE Baloo(需 Baloo 启用内容索引)。返回形态同 `search_files`。Baloo 查询语言支持 `content:foo`(仅内容匹配)与 `filename:bar`(仅文件名匹配);本工具透传 query,不做额外语义。同 `search_files`:D-Bus 探测仅 advisory,`baloosearch` 总是尝试;仅当 `baloosearch` 缺失或执行出错才降级为空集 + note。",
-  "tool.search_reindex.title": "触发 Baloo 重建索引(暂缓)",
-  "tool.search_reindex.description": "L1 deferred:本工具**不调用 daedalus-tx**、**不触发 baloosearch/balooctl**、**不改任何系统状态**。恒返回 `started=false` + 说明 note,解释 L1 重建需 y/n 确认令牌(daedalus-tx/confirm_token),尚未对接。调用方**不应**假定索引已重建。"
-}
