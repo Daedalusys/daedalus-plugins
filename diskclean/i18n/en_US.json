@@ -1,0 +1,6 @@
+{
+  "scan_running": "Scanning disk usage...",
+  "clean_rejected_readonly": "Refused: target resolves to a read-only system location.",
+  "confirm_token_expired": "Confirmation token expired or already used; re-run the scan.",
+  "tx_apply_failed": "Cleanup transaction failed; no changes were committed."
+}

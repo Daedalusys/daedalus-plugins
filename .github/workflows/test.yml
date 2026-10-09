@@ -61,7 +61,7 @@ jobs:
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
+          for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)

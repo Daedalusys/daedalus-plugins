@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 // seedApplyPlan 手动构造一个已渲染的 plan 并放入 plan store,返回 plan_id。
@@ -33,7 +33,7 @@ import (
 func seedApplyPlan(t *testing.T, a *app, name string) (planID, token string) {
 	t.Helper()
 	planID = newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
+	tok := confirmation.GenerateConfirmToken(planID)
 	tmp := t.TempDir()
 	target := filepath.Join(tmp, "example.com.conf")
 	a.outputDirs = []string{tmp}
@@ -84,7 +84,7 @@ func TestApplyTool_Happy(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "server_name example.com") {
 		t.Errorf("渲染内容未写入 %s(%v)", out.ConfigPath, err)
 	}
-	if err := blueprint.VerifyConfirmToken(planID, blueprint.ConfirmToken{Token: token, PlanID: planID}); err == nil {
+	if err := confirmation.VerifyConfirmToken(planID, confirmation.ConfirmToken{Token: token, SubjectID: planID}); err == nil {
 		t.Errorf("apply 后 token 应已消费")
 	}
 }

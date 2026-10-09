@@ -19,7 +19,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 // statusGlobPattern 把 output_path_template 的文件名部分转为匹配模式:
@@ -233,10 +233,10 @@ func removeResult(ctx context.Context, a *app, in removeIn) (*mcp.CallToolResult
 		err := fmt.Errorf("confirm_token 与 plan %q 的 remove 令牌不匹配", in.PlanID)
 		return toolError(err), "", "denied", err
 	}
-	if err := blueprint.VerifyConfirmToken("remove:"+in.Name, blueprint.ConfirmToken{
-		Token:   in.ConfirmToken,
-		PlanID:  "remove:" + in.Name,
-		Expires: plan.RemoveToken.Expires,
+	if err := confirmation.VerifyConfirmToken("remove:"+in.Name, confirmation.ConfirmToken{
+		Token:     in.ConfirmToken,
+		SubjectID: "remove:" + in.Name,
+		Expires:   plan.RemoveToken.Expires,
 	}); err != nil {
 		return toolError(err), "", "denied", err
 	}

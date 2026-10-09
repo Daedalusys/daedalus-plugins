@@ -24,6 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 type renderIn struct {
@@ -122,7 +123,7 @@ func renderResult(a *app, in renderIn) (*mcp.CallToolResult, string, string, err
 	}
 
 	planID := newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
+	tok := confirmation.GenerateConfirmToken(planID)
 
 	a.plans.put(planID, renderedPlan{
 		Name:     in.Name,

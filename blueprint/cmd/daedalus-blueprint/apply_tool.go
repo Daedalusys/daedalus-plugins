@@ -32,7 +32,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 	"github.com/Daedalusys/daedalus-sdk/shellpolicy"
 )
 
@@ -113,10 +113,10 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 		err := fmt.Errorf("confirm_token 与 plan %q 不匹配", in.PlanID)
 		return toolError(err), "", "denied", err
 	}
-	if err := blueprint.VerifyConfirmToken(in.PlanID, blueprint.ConfirmToken{
-		Token:   in.ConfirmToken,
-		PlanID:  in.PlanID,
-		Expires: plan.Token.Expires,
+	if err := confirmation.VerifyConfirmToken(in.PlanID, confirmation.ConfirmToken{
+		Token:     in.ConfirmToken,
+		SubjectID: in.PlanID,
+		Expires:   plan.Token.Expires,
 	}); err != nil {
 		return toolError(err), "", "denied", err
 	}
@@ -192,7 +192,7 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 	// 成功:为该 plan 生成 remove 确认令牌并回写 plan store(apply 是 remove
 	// 令牌的唯一生产点;remove 校验时比对 store 中的 RemoveToken),并同步
 	// 置位 Applied 标志供 handleRemove 判断"已应用"。
-	plan.RemoveToken = blueprint.GenerateConfirmToken("remove:" + in.Name)
+	plan.RemoveToken = confirmation.GenerateConfirmToken("remove:" + in.Name)
 	plan.Applied = true
 	a.plans.put(in.PlanID, plan)
 

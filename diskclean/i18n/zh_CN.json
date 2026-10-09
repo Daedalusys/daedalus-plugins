@@ -1,0 +1,6 @@
+{
+  "scan_running": "正在扫描磁盘占用……",
+  "clean_rejected_readonly": "已拒绝：目标解析到只读系统位置。",
+  "confirm_token_expired": "确认令牌已过期或已被使用；请重新执行扫描。",
+  "tx_apply_failed": "清理事务失败；未提交任何改动。"
+}

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Daedalusys/daedalus-sdk/blueprint"
+	"github.com/Daedalusys/daedalus-sdk/confirmation"
 )
 
 // TestStatusTool_UnknownName 未知蓝图报错。
@@ -90,8 +90,8 @@ func TestStatusTool_Installed(t *testing.T) {
 func seedAppliedPlan(t *testing.T, a *app, name string) (planID, removeToken string) {
 	t.Helper()
 	planID = newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
-	if err := blueprint.VerifyConfirmToken(planID, tok); err != nil {
+	tok := confirmation.GenerateConfirmToken(planID)
+	if err := confirmation.VerifyConfirmToken(planID, tok); err != nil {
 		t.Fatalf("预消费 plan token 失败: %v", err)
 	}
 	tmp := t.TempDir()
@@ -101,7 +101,7 @@ func seedAppliedPlan(t *testing.T, a *app, name string) (planID, removeToken str
 	}
 	a.outputDirs = []string{tmp}
 	ref := "remove:" + name
-	removeTok := blueprint.GenerateConfirmToken(ref)
+	removeTok := confirmation.GenerateConfirmToken(ref)
 	a.plans.put(planID, renderedPlan{
 		Name:        name,
 		Params:      map[string]any{"domain": "example.com"},
@@ -163,7 +163,7 @@ func TestRemoveTool_PlanNotApplied(t *testing.T) {
 	session, ctx := connectServer(t, a)
 
 	planID := newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
+	tok := confirmation.GenerateConfirmToken(planID)
 	tmp := t.TempDir()
 	target := filepath.Join(tmp, "example.com.conf")
 	_ = os.WriteFile(target, []byte("server {}"), 0o644)
@@ -172,7 +172,7 @@ func TestRemoveTool_PlanNotApplied(t *testing.T) {
 		Name: "nginx-vhost", Params: nil, Rendered: "server {}", Target: target, Token: tok,
 	})
 	ref := "remove:nginx-vhost"
-	removeTok := blueprint.GenerateConfirmToken(ref)
+	removeTok := confirmation.GenerateConfirmToken(ref)
 
 	res, text := callText(t, session, ctx, "blueprint_remove", map[string]any{
 		"name": "nginx-vhost", "plan_id": planID, "confirm_token": removeTok.Token,
@@ -196,8 +196,8 @@ func TestRemoveTool_NoFile(t *testing.T) {
 	session, ctx := connectServer(t, a)
 
 	planID := newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
-	_ = blueprint.VerifyConfirmToken(planID, tok)
+	tok := confirmation.GenerateConfirmToken(planID)
+	_ = confirmation.VerifyConfirmToken(planID, tok)
 	tmp := t.TempDir()
 	target := filepath.Join(tmp, "nonexistent.conf")
 	a.outputDirs = []string{tmp}
@@ -205,7 +205,7 @@ func TestRemoveTool_NoFile(t *testing.T) {
 		Name: "nginx-vhost", Params: nil, Rendered: "server {}", Target: target, Token: tok, Applied: true,
 	})
 	ref := "remove:nginx-vhost"
-	removeTok := blueprint.GenerateConfirmToken(ref)
+	removeTok := confirmation.GenerateConfirmToken(ref)
 
 	res, text := callText(t, session, ctx, "blueprint_remove", map[string]any{
 		"name": "nginx-vhost", "plan_id": planID, "confirm_token": removeTok.Token,
@@ -271,8 +271,8 @@ func TestRemoveTool_TargetSymlink(t *testing.T) {
 	session, ctx := connectServer(t, a)
 
 	planID := newPlanID()
-	tok := blueprint.GenerateConfirmToken(planID)
-	if err := blueprint.VerifyConfirmToken(planID, tok); err != nil {
+	tok := confirmation.GenerateConfirmToken(planID)
+	if err := confirmation.VerifyConfirmToken(planID, tok); err != nil {
 		t.Fatalf("预消费 plan token 失败: %v", err)
 	}
 	tmp := t.TempDir()
@@ -287,7 +287,7 @@ func TestRemoveTool_TargetSymlink(t *testing.T) {
 	}
 	a.outputDirs = []string{tmp}
 	ref := "remove:nginx-vhost"
-	removeTok := blueprint.GenerateConfirmToken(ref)
+	removeTok := confirmation.GenerateConfirmToken(ref)
 	a.plans.put(planID, renderedPlan{
 		Name: "nginx-vhost", Params: nil, Rendered: "server {}", Target: target,
 		Token: tok, RemoveToken: removeTok, Applied: true,

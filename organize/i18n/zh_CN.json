@@ -1,0 +1,6 @@
+{
+  "plan_running": "正在生成整理方案……",
+  "plan_conflict": "检测到 {0} 个命名冲突；请选择 rename、skip 或 abort。",
+  "confirm_token_expired": "确认令牌已过期或已被使用；请重新执行方案。",
+  "tx_apply_failed": "移动事务失败；已恢复原始布局。"
+}
