@@ -1,6 +1,6 @@
 module github.com/Daedalusys/daedalus-plugins/trace
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/Daedalusys/daedalus-sdk v0.0.0
