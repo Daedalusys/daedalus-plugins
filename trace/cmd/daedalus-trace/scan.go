@@ -5,9 +5,9 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -103,27 +103,28 @@ const maxLineBytes = 4 * 1024 * 1024
 // (MatchedTotal 保持真实,NextCursor 由截断点决定)。
 // 空行与不可解析/非对象/缺必填字符串字段的行计入 MalformedSkip 并跳过。
 func scanAuditLog(logPath string, cursor int64, f viewFilter, limit int) (*scanOutcome, error) {
-	file, err := os.Open(logPath)
+	r, err := audit.OpenLog(logPath, audit.OldestFirst)
 	if err != nil {
 		return nil, fmt.Errorf("trace: 打开审计日志失败: %w", err)
 	}
-	defer file.Close()
-
-	sc := bufio.NewScanner(file)
-	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	defer r.Close()
 
 	out := &scanOutcome{Entries: []traceEntry{}}
 	truncated := false
-	for lineNo := int64(1); sc.Scan(); lineNo++ {
-		out.ScannedLines = lineNo
-		if lineNo <= cursor {
-			continue
+	for lineNo := int64(1); ; lineNo++ {
+		rec, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		entry, ok := parseTraceEntry(strings.TrimSpace(sc.Text()), lineNo)
-		if !ok {
+		out.ScannedLines = lineNo
+		if err != nil {
 			out.MalformedSkip++
 			continue
 		}
+		if lineNo <= cursor {
+			continue
+		}
+		entry := recordToTraceEntry(rec, lineNo)
 		if !entryMatches(entry, f) {
 			continue
 		}
@@ -134,13 +135,30 @@ func scanAuditLog(logPath string, cursor int64, f viewFilter, limit int) (*scanO
 			truncated = true
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("trace: 读取审计日志失败: %w", err)
-	}
 	if truncated {
 		out.NextCursor = out.Entries[len(out.Entries)-1].LineNo
 	}
 	return out, nil
+}
+
+// recordToTraceEntry 从 SDK Record 构造视图条目;避免反序列化多走一轮。
+func recordToTraceEntry(rec audit.Record, lineNo int64) traceEntry {
+	e := traceEntry{
+		LineNo:    lineNo,
+		Timestamp: rec.Timestamp,
+		Identity:  rec.Identity,
+		Tool:      rec.Tool,
+		Outcome:   rec.Outcome,
+		EntryHash: rec.EntryHash,
+		Args:      rec.Args.ArgsString(),
+	}
+	if rec.TxID != "" {
+		e.TxID = rec.TxID
+		step := int64(rec.TxStep)
+		e.TxStep = &step
+		e.TxPrevHash = rec.TxPrevHash
+	}
+	return e
 }
 
 // parseTraceEntry 把一行 JSON 还原为视图条目;缺任一必填字符串字段

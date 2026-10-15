@@ -20,6 +20,7 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/dirs"
 	"github.com/Daedalusys/daedalus-sdk/objectmodel"
+	"github.com/Daedalusys/daedalus-sdk/policy"
 	"github.com/Daedalusys/daedalus-sdk/state"
 )
 
@@ -225,5 +226,31 @@ func TestStateWiring_StateWriteFailureKeepsResult(t *testing.T) {
 	// 失败这次没落任何条目:文件里只有基线那一条。
 	if entries := readState(t); len(entries) != 1 {
 		t.Errorf("条目数 = %d, want 1(仅基线那次;写失败不留行)", len(entries))
+	}
+}
+
+// === 轮转适配(2026-10-14 audit-state-rotation) ===
+
+// TestConfigureStateRotationFromPolicy_SetsCap 验证主程序启动期装载 policy
+// 并把 [state].max_size_mb 装入 state 包全局,policy 不可用时不阻断起动。
+func TestConfigureStateRotationFromPolicy_SetsCap(t *testing.T) {
+	orig := state.MaxSizeBytes()
+	t.Cleanup(func() { state.SetMaxSizeBytes(orig) })
+
+	loaded := &policy.Policy{State: policy.State{MaxSizeMB: 128}}
+	origLoad := loadPolicyForState
+	t.Cleanup(func() { loadPolicyForState = origLoad })
+	loadPolicyForState = func() (*policy.Policy, error) { return loaded, nil }
+
+	configureStateRotationFromPolicy()
+	if got := state.MaxSizeBytes(); got != 128*1024*1024 {
+		t.Fatalf("want 128 MiB, got %d", got)
+	}
+
+	// 错误路径:不起动失败,cap 保持原值(默认 64 MiB 兜底)。
+	loadPolicyForState = func() (*policy.Policy, error) { return nil, errors.New("no policy") }
+	configureStateRotationFromPolicy()
+	if got := state.MaxSizeBytes(); got != 128*1024*1024 {
+		t.Fatalf("policy 错误时不应改 cap, got %d", got)
 	}
 }
