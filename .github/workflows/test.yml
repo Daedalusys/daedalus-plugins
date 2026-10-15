@@ -45,7 +45,7 @@ jobs:
         # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.26.x'
 
       - name: Materialize blueprint embed data (//go:embed 源)
         # blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed 的目标目录,
