@@ -3,7 +3,7 @@
   "name": "Daedalus Audit Trace Viewer",
   "version": "0.1.0",
   "api_version": "0.1.0",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "maintainer": "team@daedalusys.io",
   "type": "capability",
   "runtime": {
