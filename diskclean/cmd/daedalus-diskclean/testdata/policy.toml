@@ -13,6 +13,11 @@ allowed_dirs = ["/tmp"]
 
 [audit]
 log_path = "/tmp/daedalus-fs-policy-test-audit.jsonl"
+max_size_mb = 256
+retain_days = 30
+
+[state]
+max_size_mb = 256
 
 # [objectmodel] 为 fail-closed 必需节:补最小合法值使夹具整体通过校验。
 [objectmodel]
