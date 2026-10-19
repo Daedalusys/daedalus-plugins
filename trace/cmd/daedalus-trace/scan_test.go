@@ -187,3 +187,27 @@ func TestValidateViewIDAndTimeBound(t *testing.T) {
 		t.Errorf("+08:00 偏移归一 = (%v, %v), want UTC 2025-12-31T16:00", tt, err)
 	}
 }
+
+// === audit/state-rotation:跨归档读 ===
+//
+// TestScanAuditLog_CrossesArchives:把记录写进 1 个归档段 + 活跃文件,
+// scanAuditLog 应能跨段返回所有记录(老实现只读活跃文件会丢历史)。
+func TestScanAuditLog_CrossesArchives(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	ar := filepath.Join(dir, "archive")
+	os.MkdirAll(ar, 0o750)
+	// 写 1 个归档段(通过 audit.Rotate 走真流程)
+	appendAuditLine(t, logPath, handLine("cli", "t1", "success", "2026-01-01T00:00:00+00:00"))
+	if _, err := audit.Rotate(audit.RotateOptions{LogPath: logPath, ArchiveDir: ar, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	appendAuditLine(t, logPath, handLine("cli", "t2", "success", "2026-01-02T00:00:00+00:00"))
+	out, err := scanAuditLog(logPath, 0, viewFilter{}, maxLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Entries) != 2 {
+		t.Fatalf("跨归档应得 2 条, got %d (out=%+v)", len(out.Entries), out.Entries)
+	}
+}

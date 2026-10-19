@@ -28,6 +28,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Daedalusys/daedalus-sdk/objectmodel"
+	"github.com/Daedalusys/daedalus-sdk/policy"
+	"github.com/Daedalusys/daedalus-sdk/state"
 	"github.com/Daedalusys/daedalus-sdk/version"
 )
 
@@ -65,6 +67,10 @@ type serviceQueryIn struct {
 }
 
 func main() {
+	// 启动期:读 policy 把 state 轮转阈值装进包全局;读不到则警告 + 默认(64 MiB)。
+	// 宽容设计——生产主路径中 state 轮转是 best-effort 缓存,不该阻断 MCP 服务器起动。
+	configureStateRotationFromPolicy()
+
 	server := newServer()
 
 	// SIGINT/SIGTERM 触发优雅退出;Run 返回后错误信息写 stderr,
@@ -90,6 +96,23 @@ func isCleanShutdown(err error) bool {
 
 // 协议协商由 go-sdk 默认处理:同时接受 copilot exec.ts 握手与 76 脚本 binary_tools
 // 两种客户端,不加任何自定义版本逻辑。
+// loadPolicyForState 是包级可注入的政策加载错;测试可覆写。生产态指向 policy.Load。
+var loadPolicyForState = func() (*policy.Policy, error) { return policy.Load("") }
+
+// configureStateRotationFromPolicy 读 policy 并把 state 轮转阈值设进包全局;
+// 读不到任何合法 policy 也不阻断起动(警告 + 默认 64 MiB)。daedalus-service
+// 是 daemon/service 类进程,容错姿态与 state 写盘 best-effort 一致。
+func configureStateRotationFromPolicy() {
+	pol, err := loadPolicyForState()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daedalus-service: 警告: policy 不可用,state 轮转用默认 64 MiB: %v\n", err)
+		return
+	}
+	if pol.State.MaxSizeMB > 0 {
+		state.SetMaxSizeBytes(pol.State.MaxSizeMB * 1024 * 1024)
+	}
+}
+
 func newServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    serverName,
