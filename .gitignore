@@ -10,7 +10,9 @@ bin/
 /*/daedalus-*
 
 # 本地 go.work 桥(AGENTS 允许本地生成;不入库)
+# go.work.sum 同属该桥的校验和缓存:CI 无 go.work(本文件不入库),故一并忽略。
 go.work
+go.work.sum
 
 # superpowers 设计稿 / 实施计划 / 自检材料(本地协作产物,不入库)
 docs/superpowers/

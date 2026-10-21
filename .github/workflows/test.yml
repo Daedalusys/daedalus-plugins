@@ -8,10 +8,10 @@
 name: Plugins Test
 on:
   pull_request:
-    # 反向白名单:仅忽略纯文档,其余路径变更都触发 CI。
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
+    # 故意不加 paths-ignore:main 的 required status check 钉住了 job 名
+    # "Test (9 sub-modules build + test + i18n)"。纯文档 PR 一旦被路径过滤掉,
+    # 这个 check 就没有来源,合并门永挂 Expected(PR #64 只改 AGENTS.md 即栽在这)。
+    # 保护规则还带 strict=true + enforce_admins=true,没有回旋余地。
   push:
     paths-ignore:
       - '**/*.md'
