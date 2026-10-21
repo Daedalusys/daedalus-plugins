@@ -1,14 +1,14 @@
 # daedalus-plugins — Knowledge Base
 
-**Generated:** 2026-09-21
-**Repo:** `github.com/Daedalusys/daedalus-plugins/<cap>` (6 子模块 monorepo)
+**Generated:** 2026-09-21(2026-10-21 校正 cap 清单与发布链)
+**Repo:** `github.com/Daedalusys/daedalus-plugins/<cap>` (11 子模块 monorepo)
 **Siblings:** `../daedalus-core/` (Daedalusys, runtime + image), `../daedalus-sdk/` (11 安全核心包)
 
 ## OVERVIEW
-Daedalus 插件仓根 = 四层结构中的**插件层**。9 个 Go 能力插件
+Daedalus 插件仓根 = 四层结构中的**插件层**。11 个 Go 能力插件
 (`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,
-另有 `dupe` / `trace` / `proc` 观测型插件尚未走 release 供料,均 `runtime=native`) 的 monorepo,
-独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
+`dupe` / `diskclean` / `organize` / `trace` / `proc` 为观测与清理型,均 `runtime=native`)
+的 monorepo,独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
 
 每个插件一个子目录、内含 `daedalus.plugin.json` (manifest) + `cmd/` (Go 源码) +
 `bin/` (构建产物,`just plugin-pack` 拷入,**不入库**)。各插件**独立 `go.mod`**
@@ -90,7 +90,7 @@ daedalus-plugins/
 - **插件布局统一**: 每个 `<cap>/` = `daedalus.plugin.json` + `cmd/daedalus-<cap>/` + `bin/daedalus-<cap>` + `go.mod` + `go.sum` (+ 可选 `i18n/`,`blueprint/` 独有 `blueprints/`)。
 - **独立 go.mod**: 每插件 `module github.com/Daedalusys/daedalus-plugins/<cap>`,**不聚合到根模块**;跨插件共享代码 → 提 SDK,不要在本仓共享子包。
 - **跨仓 dev 桥**: 各插件 `go.work.example` (`use ( . ../../daedalus-sdk )`) 是单仓 clone 兜底;三仓平级 clone 时以主仓 `../daedalus-core/go.work` 为准 — 它 `use` 全部 cap 并对 SDK 的两个 require 版本各钉一行 replace,workspace 级 replace 覆盖模块级,因此本地无需符号链接桥。
-- **不产独立 release**: 本仓只演进源码;镜像即发布物,经主仓 `just build` 出口。`bin/` 不入库,`just plugin-pack` 拷入。
+- **release 即供料口**: 本仓经 `.github/workflows/release.yml` 发布 GitHub release(11 个 `daedalus.<cap>.plugin.zip`),主仓 CI 构建镜像时用 `gh release download` 取 **latest**。因此 release 是链路的一环,不是可跳过的可选步骤;`bin/` 与 zip 都不入库。
 - **Blueprint 数据单一事实源**: `blueprint/blueprints/<id>/` 是唯一权威;主仓 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/` 供 `//go:embed`,**复制产物不入库**。
 - **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 4 个不写。`name="*"` 匹配所有资源。
 - **i18n**: locale 文件在 `<cap>/i18n/<locale>.json` (POSIX 下划线命名);manifest 声明 `"i18n": ["en_US", "zh_CN"]` 数组,en_US 必定位兜底。
@@ -102,13 +102,16 @@ daedalus-plugins/
 
 ## 跨仓 release 流程
 
-插件仓不独立发布 — 发布以**主仓镜像构建**为出口:
+发布出口分两段:本仓 GitHub release 供料,主仓镜像构建消费。release zip 是主仓 CI 构建镜像的唯一插件来源。
 
-1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
+1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./cmd/... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
-3. **打包**: 主仓 `just plugin-pack` → 构建全部 Go 二进制 → 同步到本仓各 `<cap>/bin/` → `daedalus-plugin-pack` 打 zip(注入逐条目 sha256 checksums + manifest 规范化自摘要)→ `-verify --keep` 解压到镜像树安装态;
-4. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
-5. **镜像出口**: 主仓 `just build` (sync + podman build) → 镜像内 7 插件(copilot + 6 能力)全 ok 断言在 v3 构建机补跑。
+3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 11 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
+4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包循环目前只覆盖 6 个官方出厂件,与 CI 的通配腿不一致;
+5. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
+6. **镜像出口**: 主仓 `just build` (sync + podman build)。
+
+**必须重新发版的改动**: 插件二进制内嵌 SDK `policy` 包的 struct 形状,而该包对 TOML 未知键 fail-closed(整份策略拒加载)。凡让主仓 `policy.toml` 新增键的 SDK / 主仓改动,都要在本仓发一次新 release —— 否则 latest zip 里的旧二进制会在 76 的 `tools/list` 握手处拒启动,镜像构建整体失败,且失败点看起来像"插件没应答"而非策略不兼容。
 
 ## ANTI-PATTERNS (THIS REPO)
 - **NEVER** 改插件目录名 / manifest `id` — 被 systemd 单元 / copilot 硬编码锁定;改名即破坏全链路,只能改 `name` 显示字段。
@@ -119,7 +122,8 @@ daedalus-plugins/
 - **NEVER** 在 `service` 插件内改 systemd 单元状态 — 状态变更一律经 `daedalus-tx` (`service.set`),绕行破坏审计链。
 - **NEVER** 手改 `cmd/daedalus-blueprint/blueprints/` — 数据源是 `blueprint/blueprints/`,`just blueprint-embed` 复制,不入库。
 - **NEVER** 在 manifest `resources[].kind` 加新 Kind 而不同步 `daedalus-sdk/objectmodel/` + `policy.toml` — `76-daedalus-plugin-gen.sh` 拒构建。
-- **NEVER** 独立发版本仓 — 镜像即发布物,主仓 `just build` 是唯一出口。
+- **NEVER** 只改本仓源码就认为"发布完成" — 主仓取的是 latest release zip;不发版,改动就到不了镜像。
+- **NEVER** 手工往 release 上传 zip — 由 `release.yml` 构建并打包,手传的产物无流水线溯源。
 
 ## COMMANDS
 ```bash
@@ -129,7 +133,7 @@ cd shell && go build ./... && go test ./...
 cd blueprint && go build ./... && go test ./...
 
 # 全仓构建/测试 (仓根不是模块,必须逐 cap 独立跑;与 CI test.yml 同款循环)
-for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
+for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc; do
     (cd "$cap" && go build ./... && go test ./...)
 done
 
@@ -152,5 +156,5 @@ daedalus-host -dir <unpacked-plugin-dir> verify daedalus.fs
 - **跨仓契约钉子**: Go↔Deno 跨语言契约 (`tests/deno/shellpolicy_contract.test.ts` 在主仓) + 各仓漂移测试 (三点防漂移链) 是 SDK / Copilot / 插件三方同步的强制约束。
 - **Blueprint 数据双源陷阱**: 源码侧 `blueprint/blueprints/` 与构建侧 `cmd/daedalus-blueprint/blueprints/` (//go:embed 目标) **同名目录**但职责不同 — 前者是单一事实源,后者是构建期复制产物(不入库);改蓝图**只改前者**,跑 `just blueprint-embed` 重生后者。
 - **service 资源范围**: `service` 插件是**唯一**声明 `resources[].kind=service` 的官方插件,作用域 `name=*` 匹配所有 systemd 单元;新增资源 Kind 必经 `daedalus-sdk/objectmodel`。
-- **本仓非发行版**: 无独立 release artifact,无版本 tag 发布;镜像即发布物。
+- **本仓是供料仓,不是终端发布物**: 有版本 tag 与 GitHub release(`release.yml` 出 11 个 zip),但用户可见的发布物仍是主仓镜像;latest zip 一旦落后于主仓 `policy.toml`,镜像构建就会在 76 失败。
 - 老仓 `Daedalusys/Daedalusys` 已于 2026-09-21 archived,历史 issue 保留可读;新 issue 一律开在本仓。
