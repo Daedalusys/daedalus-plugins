@@ -1,6 +1,9 @@
 ---
-# daedalus-plugins 仓 CI: 9 个 sub-module 独立 `go build` + `go test` + i18n
-# 同步校验。跨仓 release 流程见 AGENTS.md「跨仓 release 流程」段。
+# daedalus-plugins 仓 CI: 各 sub-module 独立 `go build` + `go test` + i18n
+# 同步校验。cap 清单只在下面两个循环里各写一次(build/test 11 个、i18n 9 个,
+# 差集见 daedalus-plugins#66),不进 job 名 —— required status check 钉的是 job
+# 名,把计数写进名字等于开了第二事实源。跨仓 release 流程见 AGENTS.md
+# 「跨仓 release 流程」段。
 #
 # 布局约定:daedalus-sdk 必须检出到 workspace 子目录 daedalus-sdk(GH Actions
 # 不允许 checkout 逃出 GITHUB_WORKSPACE);go build 从 <cap>/ 跑时,各
@@ -9,7 +12,7 @@ name: Plugins Test
 on:
   pull_request:
     # 故意不加 paths-ignore:main 的 required status check 钉住了 job 名
-    # "Test (9 sub-modules build + test + i18n)"。纯文档 PR 一旦被路径过滤掉,
+    # "Test (sub-modules build + test + i18n)"。纯文档 PR 一旦被路径过滤掉,
     # 这个 check 就没有来源,合并门永挂 Expected(PR #64 只改 AGENTS.md 即栽在这)。
     # 保护规则还带 strict=true + enforce_admins=true,没有回旋余地。
   push:
@@ -29,7 +32,7 @@ permissions:
 
 jobs:
   test:
-    name: Test (9 sub-modules build + test + i18n)
+    name: Test (sub-modules build + test + i18n)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -56,7 +59,7 @@ jobs:
           mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
           rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
-      - name: Build & Test 9 sub-modules
+      - name: Build & Test sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
