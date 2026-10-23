@@ -34,26 +34,25 @@ permissions:
 jobs:
   release:
     name: Build & Upload 6 plugin zips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Checkout daedalus-sdk (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Daedalusys/daedalus-sdk
           path: daedalus-sdk
 
       - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Daedalusys/daedalus-core
           path: daedalus-core
 
       - name: Set Up Go Toolchain
         # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.25.x'
 
