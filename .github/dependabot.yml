@@ -1,0 +1,49 @@
+# Dependabot 配置
+#
+# 背景:三仓的 workflow 已把 uses 全部钉到 40 位 SHA(#58 / #33 / #68),tag 不再
+# 跟随上游自动漂移。好处是供应链面收敛(见 issue #50 讨论里对 ubuntu-latest 漂移
+# 的教训);代价是 action 版本要人工跟进 —— 这正是本文件负责的部分。
+#
+# 为什么全部 group 成一个 PR:钉 SHA 的写法下,一次升级会同时改动 workflow 里的
+# SHA 与尾注释(`# v4`)。逐个开 PR 会变成 6 个近乎相同、且每个都要人工核对
+# SHA↔版本的评审负担。合并成单个 PR 后,一次核对全部。
+#
+# 评审要点(人工,不可省):
+#   1. 核对 SHA 与尾注释的版本号是否对应 —— dependabot 偶尔会把 `# v4` 注释留在
+#      旧版本而 SHA 已指向新版本;
+#   2. `denoland/setup-deno` 的 v2 是 branch 而非 tag(该仓无浮动 v2 tag),升级信号
+#      依赖 branch 移动,dependabot 的跟随行为与 tag 场景不同,需特别留意;
+#   3. 合并前确认对应 CI run 绿。
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      # 刻意避开整点 —— 整点是全网 dependabot 提交的高峰,错开能减少基础设施抖动。
+      # 三仓刻意错开到不同时段,避免同时涌来 3 个 PR。
+      interval: weekly
+      day: tuesday
+      time: "05:43"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci(deps)"
+      prefix-development: "ci(deps)"
+      include: scope
+    labels:
+      - dependencies
+      - ci
+    groups:
+      # 全部 action 合成一个 PR,理由见文件头
+      github-actions:
+        patterns:
+          - "*"
+
+  # Go module 依赖。是否纳入取决于是否需要 pin 到具体 minor —— 当前仓的 go.mod
+  # 已是精确版本,故先不开,待需要时再启用(见各自 AGENTS.md 的模块管理约定)。
+  # - package-ecosystem: gomod
+  #   directory: /
+  #   schedule:
+  #     interval: weekly
+  #   open-pull-requests-limit: 5
