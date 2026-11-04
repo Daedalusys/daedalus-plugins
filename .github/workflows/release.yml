@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
           # 说明文本由 env.CAPS 派生:新增 cap 只改一处,不硬编码数量与名单。
-          NOTES="$(printf '%s 个能力插件 zip(%s)。daedalus-core 镜像构建经 scripts/fetch-plugins.sh 通配解包 release 里的全部 *.plugin.zip 进 /opt/daedalus/plugins —— 名单的唯一事实源就是本 release 的资产集。\n" "$(echo "$CAPS" | wc -w)" "$CAPS")"
+          NOTES="$(printf "%s 个能力插件 zip(%s)。daedalus-core 镜像构建经 scripts/fetch-plugins.sh 通配解包 release 里的全部 *.plugin.zip 进 /opt/daedalus/plugins —— 名单的唯一事实源就是本 release 的资产集。\n" "$(echo "$CAPS" | wc -w)" "$CAPS")"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
           else
