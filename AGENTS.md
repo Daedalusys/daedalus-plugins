@@ -107,7 +107,7 @@ daedalus-plugins/
 1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./cmd/... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
 3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 11 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
-4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包循环目前只覆盖 6 个官方出厂件,与 CI 的通配腿不一致;
+4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集);
 5. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
 6. **镜像出口**: 主仓 `just build` (sync + podman build)。
 
