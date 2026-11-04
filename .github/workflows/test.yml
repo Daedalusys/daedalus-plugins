@@ -1,9 +1,9 @@
 ---
 # daedalus-plugins 仓 CI: 各 sub-module 独立 `go build` + `go test` + i18n
-# 同步校验。cap 清单只在下面两个循环里各写一次(build/test 11 个、i18n 9 个,
-# 差集见 daedalus-plugins#66),不进 job 名 —— required status check 钉的是 job
-# 名,把计数写进名字等于开了第二事实源。跨仓 release 流程见 AGENTS.md
-# 「跨仓 release 流程」段。
+# 同步校验。cap 清单的唯一事实源是 workflow 级 `env.CAPS`:build/test 与 i18n 两步
+# 共用它,另有「cap 清单漂移门禁」步断言它与实际插件目录集合相等。清单不进
+# job 名 —— required status check 钉的是 job 名,把计数写进名字等于开了第二
+# 事实源。跨仓 release 流程见 AGENTS.md「跨仓 release 流程」段。
 #
 # 布局约定:daedalus-sdk 必须检出到 workspace 子目录 daedalus-sdk(GH Actions
 # 不允许 checkout 逃出 GITHUB_WORKSPACE);go build 从 <cap>/ 跑时,各
@@ -30,6 +30,10 @@ concurrency:
 permissions:
   contents: read
 
+# cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
+env:
+  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc"
+
 jobs:
   test:
     name: Test (sub-modules build + test + i18n)
@@ -42,6 +46,21 @@ jobs:
         with:
           repository: Daedalusys/daedalus-sdk
           path: daedalus-sdk
+
+      - name: cap 清单漂移门禁
+        # env.CAPS 是清单唯一事实源;这里断言它与「含 daedalus.plugin.json 的目录」
+        # 集合**相等**(双向):多一个目录/少一个 cap 都拒,防止新插件静默不受测。
+        shell: bash
+        run: |
+          expected="$(echo "$CAPS" | tr ' ' '\n' | sed '/^$/d' | sort)"
+          actual="$(for d in */; do d="${d%/}"; [ -f "$d/daedalus.plugin.json" ] && echo "$d"; done | sort)"
+          if [ "$expected" != "$actual" ]; then
+            echo "ERROR: env.CAPS 与实际插件目录不等" >&2
+            echo "  仅在 CAPS: $(comm -23 <(echo "$expected") <(echo "$actual") | tr '\n' ' ')" >&2
+            echo "  仅在目录: $(comm -13 <(echo "$expected") <(echo "$actual") | tr '\n' ' ')" >&2
+            exit 1
+          fi
+          echo "OK: env.CAPS == 实际插件目录(共 $(printf '%s\n' "$expected" | grep -c .) 个)"
 
       - name: Set Up Go Toolchain
         # 各 sub-module go.mod pins `go 1.25.0`;runner image 可能更老,显式 pin。
@@ -63,7 +82,7 @@ jobs:
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc; do
+          for cap in $CAPS; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)
@@ -76,7 +95,7 @@ jobs:
         # (copilot 留 core 仓)。
         shell: bash
         run: |
-          for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
+          for cap in $CAPS; do
             manifest="$cap/daedalus.plugin.json"
             i18n_dir="$cap/i18n"
             declared=$(jq -r '.i18n // [] | .[]' "$manifest" 2>/dev/null || true)

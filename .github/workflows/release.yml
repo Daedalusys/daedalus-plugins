@@ -1,5 +1,5 @@
 ---
-# daedalus-plugins 仓 release 流水线:9 个 sub-module 各构建 + 打 *.plugin.zip 上传 GitHub release。
+# daedalus-plugins 仓 release 流水线:各 sub-module(清单见 workflow 级 `env.CAPS`)构建 + 打 *.plugin.zip 上传 GitHub release。
 # 跨仓 release 流程(镜像出口 / plugin-pack 配方)单一事实源见 AGENTS.md「跨仓 release 流程」段。
 #
 # 触发:推送 v* tag(正式发版)或 workflow_dispatch(手动,需填 tag input)。
@@ -31,9 +31,13 @@ concurrency:
 permissions:
   contents: write
 
+# cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
+env:
+  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc"
+
 jobs:
   release:
-    name: Build & Upload 6 plugin zips
+    name: Build & Upload plugin zips
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -76,7 +80,7 @@ jobs:
           mkdir -p blueprint/cmd/daedalus-blueprint/blueprints
           rsync -a --delete blueprint/blueprints/ blueprint/cmd/daedalus-blueprint/blueprints/
 
-      - name: Build 6 plugins & pack 6 zips
+      - name: Build plugins & pack zips
         # 每个 sub-module 独立 go build(monorepo 无共享 go.mod);zip 打到暂存
         # 目录(不在插件源目录内——若 -out 落在 -in 目录里,重跑时旧 zip 会被
         # 打进新 zip,zip-in-zip 递归膨胀)。
@@ -87,7 +91,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/release-zips
-          for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc; do
+          for cap in $CAPS; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
             stage="/tmp/release-zips-stage/$cap"
@@ -100,7 +104,7 @@ jobs:
           done
           ls -la /tmp/release-zips/
 
-      - name: Create or update GitHub release with 9 zips
+      - name: Create or update GitHub release
         # release 已存在时(重跑)只上传资产(--clobber 覆盖),不存在时创建。
         # tag 来源:push v* → 自动取 tag;workflow_dispatch → 必须填 tag input。
         env:
@@ -121,6 +125,8 @@ jobs:
             echo "ERROR: tag 非法(应为 vX.Y.Z),got: [$TAG]" >&2
             exit 1
           fi
+          # 说明文本由 env.CAPS 派生:新增 cap 只改一处,不硬编码数量与名单。
+          NOTES="$(printf "%s 个能力插件 zip(%s)。daedalus-core 镜像构建经 scripts/fetch-plugins.sh 解包本 release 的全部 *.plugin.zip 进 /opt/daedalus/plugins —— 解包哪些由本 release 的资产集决定;镜像侧允许集合另由 daedalus-core 的 files/scripts/76-daedalus-plugin-gen.sh 里的 CAPS 把关。\n" "$(echo "$CAPS" | wc -w)" "$CAPS")"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
           else
@@ -128,7 +134,9 @@ jobs:
             # HEAD;显式指向本次 run 的实际 commit,保证 tag 落点与构建产物源码一致。
             gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "daedalus-plugins $TAG" \
-              --notes "9 个能力插件 zip(fs/shell/pkg/sysinfo/service/blueprint/dupe/trace/proc)。其中 daedalus-core 镜像构建当前经 fetch-plugins.sh 只取前六个,dupe/trace/proc 随 release 分发但暂未进镜像。"
+              --title "daedalus-plugins $TAG"
           fi
+          # 已存在的 release 重跑时也必须刷新说明(上面的 create 分支不会走到);
+          # 不刷新就会像 v0.2.1 那样:资产已是全部能力件、页面却停在写死旧数量的文案。
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$NOTES"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
