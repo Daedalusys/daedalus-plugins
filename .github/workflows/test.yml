@@ -41,9 +41,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 本 job 没有任何一步靠 .git/config 的 http.extraheader 取凭据
+          # (build/test/i18n 校验都不需要),不留跨 step 存活的 token。
+          persist-credentials: false
       - name: Checkout daedalus-sdk (sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           repository: Daedalusys/daedalus-sdk
           path: daedalus-sdk
 
@@ -68,6 +73,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.x'
+          # 本 job 由 pull_request 触发 → 显式关掉 module cache:cache 按分支
+          # 作用域共享,基础分支能读到 PR 分支写入的条目,那是 cache 投毒的读侧。
+          cache: false
 
       - name: Materialize blueprint embed data (//go:embed 源)
         # blueprint/cmd/daedalus-blueprint/blueprints/ 是 //go:embed 的目标目录,
