@@ -30,3 +30,14 @@ secret_sources = ["kwallet", "credstore"]
 
 [state]
 max_size_mb = 64
+
+# [fleet] 为 fail-closed 必需节:policy 校验要求这 6 个字段非空/为正,缺失即拒载。
+# 取值与 daedalus-sdk 的生产一致副本(policy/testdata/policy.toml)逐字一致,免得
+# 夹具与生产策略在风险判定上分叉。
+[fleet]
+high_risk_packages = ["kernel", "systemd", "dbus", "NetworkManager", "selinux", "polkit", "openssh"]
+high_risk_path_prefixes = ["/etc", "/boot", "/usr", "/var/lib"]
+high_risk_services = ["systemd", "dbus", "NetworkManager", "sshd"]
+high_risk_adapters = ["bootc.switch", "bootc.upgrade", "bootc.rollback"]
+transient_retry_max = 3
+heartbeat_timeout_seconds = 30
