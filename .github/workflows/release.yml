@@ -42,15 +42,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 不把 GITHUB_TOKEN 持久化进 .git/config:发布步骤用 GH_TOKEN 环境变量
+          # 取凭据(见下方 Create or update GitHub release 步),不读 .git/config
+          # 的 http.extraheader。本文件其余 checkout 同此。
+          persist-credentials: false
       - name: Checkout daedalus-sdk (sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           repository: Daedalusys/daedalus-sdk
           path: daedalus-sdk
 
       - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           repository: Daedalusys/daedalus-core
           path: daedalus-core
 
@@ -59,6 +66,9 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.25.x'
+          # 本 workflow 只由 tag push / workflow_dispatch 触发,不接受 PR ——
+          # 缓存条目不会被 PR 分支写入,故保留 cache(发布腿提速)。
+          cache: true
 
       - name: Build daedalus-plugin-pack (from daedalus-core)
         # 只构建打包器一个二进制(不构建 core 其余 cmd);-h 冒烟确认可执行。
