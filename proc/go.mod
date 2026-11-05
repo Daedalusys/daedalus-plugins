@@ -3,7 +3,7 @@ module github.com/Daedalusys/daedalus-plugins/proc
 go 1.26.0
 
 require (
-	github.com/Daedalusys/daedalus-sdk v0.0.0
+	github.com/Daedalusys/daedalus-sdk v0.1.1
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
