@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -200,8 +201,10 @@ func handleWriteFile(_ context.Context, _ *mcp.CallToolRequest, in writeFileIn) 
 	return res, nil, nil
 }
 
+// 写路径必须过二档:白名单可由策略放宽(运维自定义 policy),只靠一档会让被放宽
+// 的 /etc、/proc 直接暴露成可写面,二档是独立于白名单的最后一道。
 func writeFileResult(in writeFileIn) (*mcp.CallToolResult, string, error) {
-	safePath, err := pathguard.ValidatePath(in.Path, true)
+	safePath, err := validateWriteTarget(in.Path)
 	if err != nil {
 		return toolError(err), "denied", err
 	}
@@ -265,12 +268,14 @@ func handleMoveFile(_ context.Context, _ *mcp.CallToolRequest, in moveFileIn) (*
 	return res, nil, nil
 }
 
+// 移动等于"读出 + 删除",源端同样是写语义:只守目标端会留下把 /etc/shadow 搬走的
+// 读取侧缺口,故两端都过二档。
 func moveFileResult(in moveFileIn) (*mcp.CallToolResult, string, error) {
-	safeSrc, err := pathguard.ValidatePath(in.Src, true)
+	safeSrc, err := pathguard.ValidateWritePath(in.Src)
 	if err != nil {
 		return toolError(err), "denied", err
 	}
-	safeDst, err := pathguard.ValidatePath(in.Dst, true)
+	safeDst, err := validateWriteTarget(in.Dst)
 	if err != nil {
 		return toolError(err), "denied", err
 	}
@@ -279,6 +284,35 @@ func moveFileResult(in moveFileIn) (*mcp.CallToolResult, string, error) {
 		return toolError(err), "error", err
 	}
 	return textResult(fmt.Sprintf("Successfully moved %s to %s", in.Src, in.Dst)), "success", nil
+}
+
+// validateWriteTarget 是 write_file / move_file 目标端的二档校验。
+//
+// 目标可能是尚不存在的新文件(新建或改名),而二档强制完整 realpath、对不存在的
+// 路径一律拒绝;直接照搬会打挂"白名单内新建文件"这条主路径。故先经一档
+// ValidatePath 规范化并守住白名单,再对目标本身(存在时,符号链接随之一并解析)
+// 或它最深的已存在祖先走二档——判定的是真实落点,新建到敏感目录同样被拒。
+// 悬空符号链接的目标因此被拒:写必须知道最终落到哪个 inode。
+func validateWriteTarget(pathStr string) (string, error) {
+	canonical, err := pathguard.ValidatePath(pathStr, false)
+	if err != nil {
+		return "", err
+	}
+	probe := canonical
+	for {
+		if _, statErr := os.Lstat(probe); statErr == nil {
+			break
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			break
+		}
+		probe = parent
+	}
+	if _, err := pathguard.ValidateWritePath(probe); err != nil {
+		return "", err
+	}
+	return canonical, nil
 }
 
 // mkdirParent 对应 ts 的 "取最后一个 '/' 之前的父目录并 mkdir -p、失败静默":
