@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -547,6 +549,158 @@ func TestScanDupes_MinSizeFilter(t *testing.T) {
 	}
 	if groups := decodeGroups(t, res); len(groups) != 0 {
 		t.Errorf("min_size 过滤后不应有分组: %+v", groups)
+	}
+}
+
+// —— 硬链接(同一 inode)不算重复 ——
+
+// scannedFromPath 按真实文件的 stat 结果构造 scannedFile。
+// 折叠判据是 inode,手工只填 path/size 的条目 dev/ino 恒为 0,按保守规则
+// 不折叠,因此这里必须把真实 (dev, ino) 带上才能演练到折叠行为。
+func scannedFromPath(t *testing.T, path string) scannedFile {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat %s 失败: %v", path, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("%s 的 Sys() 不是 *syscall.Stat_t,而是 %T", path, info.Sys())
+	}
+	return scannedFile{
+		path:  path,
+		size:  info.Size(),
+		mtime: info.ModTime(),
+		dev:   uint64(st.Dev),
+		ino:   st.Ino,
+	}
+}
+
+// 折叠必须保留首次出现顺序,且只留首个同 inode 条目。
+func TestCollapseHardlinks_KeepsFirstOccurrence(t *testing.T) {
+	in := []scannedFile{
+		{path: "/x/a", dev: 1, ino: 10},
+		{path: "/x/b", dev: 1, ino: 10},
+		{path: "/x/c", dev: 1, ino: 11},
+		{path: "/x/d", dev: 2, ino: 10}, // 同 Ino 不同 Dev → 不是同一 inode
+	}
+	out := collapseHardlinks(in)
+	var paths []string
+	for _, f := range out {
+		paths = append(paths, f.path)
+	}
+	want := []string{"/x/a", "/x/c", "/x/d"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("折叠结果应保留首次出现且跨设备不误折叠, want %v got %v", want, paths)
+	}
+}
+
+// 没采到 inode(dev/ino 都为 0)的条目一律不折叠:宁可漏折叠,也不把
+// 互不相关的文件误并成一份。
+func TestCollapseHardlinks_ZeroInodeNotCollapsed(t *testing.T) {
+	in := []scannedFile{
+		{path: "/x/a"},
+		{path: "/x/b"},
+	}
+	if out := collapseHardlinks(in); len(out) != 2 {
+		t.Fatalf("dev/ino 为 0 的条目不得折叠, got %d 条: %+v", len(out), out)
+	}
+}
+
+// 硬链接(同一 inode)不算重复文件:折叠后只剩一个成员,组不应出现。
+func TestGroupDuplicates_HardlinkPairIsNotDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	payload := []byte("hardlink-payload-0123456789")
+	if err := os.WriteFile(a, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(a, b); err != nil {
+		t.Fatal(err)
+	}
+
+	fa, fb := scannedFromPath(t, a), scannedFromPath(t, b)
+	if fa.ino != fb.ino || fa.dev != fb.dev {
+		t.Fatalf("os.Link 后两条路径应同 inode, got a=(%d,%d) b=(%d,%d)", fa.dev, fa.ino, fb.dev, fb.ino)
+	}
+
+	groups, err := groupDuplicates(context.Background(), []scannedFile{fa, fb}, algoSHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("硬链接对不该被报成重复组, got %d 组: %+v", len(groups), groups)
+	}
+}
+
+// 硬链接 + 真重复混合:真重复那一份仍要成组,且 wasted_bytes 只算一份。
+func TestGroupDuplicates_HardlinkMixedWithRealDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	c := filepath.Join(dir, "c.txt")
+	payload := []byte("hardlink-payload-0123456789")
+	if err := os.WriteFile(a, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []scannedFile{scannedFromPath(t, a), scannedFromPath(t, b), scannedFromPath(t, c)}
+	groups, err := groupDuplicates(context.Background(), files, algoSHA256, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("真重复应成 1 组, got %d: %+v", len(groups), groups)
+	}
+	g := groups[0]
+	if len(g.Files) != 2 {
+		t.Fatalf("折叠后组内应是 2 个文件(一硬链接代表 + 一真副本), got %d: %v", len(g.Files), g.Files)
+	}
+	if g.WastedBytes != int64(len(payload)) {
+		t.Fatalf("wasted_bytes 应只算一份真实副本(%d), got %d", len(payload), g.WastedBytes)
+	}
+}
+
+// 端到端复现 issue:硬链接 b.txt 指向 a.txt,c.txt 是同内容的真副本。
+// 期望只剩一组(折叠后的代表 + c.txt),wasted_bytes 只算一份。
+func TestScanDupes_HardlinkNotReportedAsDuplicate(t *testing.T) {
+	ensureDefaultAllowlist(t)
+	base := mustTempDir(t)
+	payload := "hardlink-payload-0123456789"
+	a := writeFileContent(t, base, "a.txt", payload)
+	b := filepath.Join(base, "b.txt")
+	if err := os.Link(a, b); err != nil {
+		t.Fatalf("创建硬链接失败: %v", err)
+	}
+	c := writeFileContent(t, base, "c.txt", payload)
+
+	res, _, err := scanDupes(context.Background(), nil, ScanDupesInput{Dirs: []string{base}, Algo: algoSHA256})
+	if err != nil || res.IsError {
+		t.Fatalf("scan_dupes 失败: err=%v res=%v", err, res)
+	}
+	groups := decodeGroups(t, res)
+	if len(groups) != 1 {
+		t.Fatalf("应只剩 1 组(硬链接代表 + 真副本), got %d: %+v", len(groups), groups)
+	}
+	g := groups[0]
+	if slices.Contains(g.Files, a) && slices.Contains(g.Files, b) {
+		t.Errorf("a.txt 与 b.txt 是同一 inode,不得同时出现在组内: %v", g.Files)
+	}
+	if !slices.Contains(g.Files, c) {
+		t.Errorf("真副本 c.txt 应在组内: %v", g.Files)
+	}
+	if len(g.Files) != 2 {
+		t.Errorf("组内文件数 = %d, want 2(一硬链接代表 + c.txt): %v", len(g.Files), g.Files)
+	}
+	if want := int64(len(payload)); g.WastedBytes != want {
+		t.Errorf("wasted_bytes = %d, want %d(硬链接不多占空间)", g.WastedBytes, want)
 	}
 }
 
