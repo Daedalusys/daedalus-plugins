@@ -83,6 +83,10 @@ type scannedFile struct {
 	path  string
 	size  int64
 	mtime time.Time
+	// dev/ino 是硬链接折叠的判据:同一 (dev, ino) 即同一份数据。
+	// 不带 json tag —— 本类型是内部结构,不进 JSON 输出。
+	dev uint64
+	ino uint64
 }
 
 func main() {
@@ -355,7 +359,14 @@ func walkFiles(ctx context.Context, root string, minSize int64, emit func(*scann
 			if progress != nil && scanned%progressStep == 0 {
 				progress(scanned)
 			}
-			emit(&scannedFile{path: path, size: info.Size(), mtime: info.ModTime()})
+			// inode 标识随条目一起采集:硬链接的多个路径共享同一 (dev, ino),
+			// 折叠阶段据此判定它们是同一份数据。取不到 stat 时 dev/ino 留 0,
+			// 折叠阶段会保守地不折叠。
+			sf := scannedFile{path: path, size: info.Size(), mtime: info.ModTime()}
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				sf.dev, sf.ino = uint64(stat.Dev), stat.Ino
+			}
+			emit(&sf)
 		}
 	}
 	return nil
@@ -364,6 +375,9 @@ func walkFiles(ctx context.Context, root string, minSize int64, emit func(*scann
 // groupDuplicates 按 algo 分组,仅保留 >= 2 个成员的分组;读取失败的单个文件
 // 跳过而不中断整体扫描。分组按 wasted_bytes 降序、group_id 升序输出。
 func groupDuplicates(ctx context.Context, files []scannedFile, algo string, progress func(int)) ([]dupeGroup, error) {
+	// 硬链接先折叠:同一 inode 的多个路径只算一份数据,不该被报成重复。
+	files = collapseHardlinks(files)
+
 	buckets := make(map[string][]scannedFile)
 	for i, f := range files {
 		select {
@@ -411,6 +425,37 @@ func groupDuplicates(ctx context.Context, files []scannedFile, algo string, prog
 		return groups[i].GroupID < groups[j].GroupID
 	})
 	return groups, nil
+}
+
+// sameInode 判两个条目是否同一 inode。必须连 dev 一起比:不同挂载点可能有
+// 相同的 Ino,只看 Ino 会把无关文件误折叠。
+func sameInode(a, b scannedFile) bool {
+	return a.dev == b.dev && a.ino == b.ino
+}
+
+// collapseHardlinks 把同一 inode 的多个路径折叠成一个代表(取首次出现)。
+// 硬链接并不多占空间,把它们算成重复会虚高 wasted_bytes。
+// dev/ino 都为 0 表示该条目没采到 inode 信息(取不到 stat 时),此时不做折叠,
+// 以免把互不相关的文件误并成一份。
+func collapseHardlinks(files []scannedFile) []scannedFile {
+	out := make([]scannedFile, 0, len(files))
+	seen := make(map[[2]uint64]bool, len(files))
+	// 取不到 stat 的条目 dev/ino 都留在零值:它们彼此会被判成同一 inode,
+	// 故以零值条目为哨兵,这类条目一律原样保留、不参与折叠。
+	var noInode scannedFile
+	for _, f := range files {
+		if sameInode(f, noInode) {
+			out = append(out, f)
+			continue
+		}
+		key := [2]uint64{f.dev, f.ino}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, f)
+	}
+	return out
 }
 
 // groupKey 计算单个文件的分组键:
