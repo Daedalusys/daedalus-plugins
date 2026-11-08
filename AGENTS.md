@@ -108,10 +108,15 @@ daedalus-plugins/
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
 3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 11 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
 4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集);
+
+   **门禁**: `test.yml` 的 `release-sync` job 会在 main 领先 latest release 时变红。
+   判据是 git 祖先关系 `main ⊆ release.targetCommitish`,不是时间戳。所以改动插件源码
+   合并后**必须发版**,否则 CI 红;这也解释了为什么"修复合了但实机门禁还在 FAIL"——
+   镜像取的是 release 资产,不是 main 源码。
 5. **构建期自校验**: `76-daedalus-plugin-gen.sh`(主仓)从 manifest + policy.toml 渲染 systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind` ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
 6. **镜像出口**: 主仓 `just build` (sync + podman build)。
 
-**必须重新发版的改动**: 插件二进制内嵌 SDK `policy` 包的 struct 形状,而该包对 TOML 未知键 fail-closed(整份策略拒加载)。凡让主仓 `policy.toml` 新增键的 SDK / 主仓改动,都要在本仓发一次新 release —— 否则 latest zip 里的旧二进制会在 76 的 `tools/list` 握手处拒启动,镜像构建整体失败,且失败点看起来像"插件没应答"而非策略不兼容。
+**必须重新发版的改动**: 插件二进制内嵌 SDK `policy` 包的 struct 形状,而该包对 TOML 未知键 fail-closed(整份策略拒加载)。凡让主仓 `policy.toml` 新增键的 SDK / 主仓改动,都要在本仓发一次新 release —— 否则 latest zip 里的旧二进制会在 76 的 `tools/list` 握手处拒启动,镜像构建整体失败,且失败点看起来像"插件没应答"而非策略不兼容。**任何插件修复合并进 main 后都必须发版** —— 否则 `test.yml` 的 `release-sync` 门禁会红,主仓镜像也仍会取到旧二进制。
 
 ## ANTI-PATTERNS (THIS REPO)
 - **NEVER** 改插件目录名 / manifest `id` — 被 systemd 单元 / copilot 硬编码锁定;改名即破坏全链路,只能改 `name` 显示字段。
