@@ -87,5 +87,21 @@ out="$(FAKE_TARGET="release-branch" MAIN_REF="origin/main" REPO="$tmp/remote.git
        bash "$HERE/check-release-sync.sh" 2>&1)" && rc=0 || rc=$?
 st 2 "$rc" "release 锚点对象不在本地 → 显式失败(2)"
 
+# 8) gh 报错(exit 1)但 stdout 仍有内容 → 必须显式失败(2),不得把半截输出当结论。
+#    这是 fail-open 最现实的入口:HTTP 502 / 限流时常先打一段 JSON 再非零退出。
+cat > "$tmp/bin/gh-broken" <<EOS
+#!/usr/bin/env bash
+printf 'v9.9.9 %s\n' "$C2"
+echo "gh: HTTP 502" >&2
+exit 1
+EOS
+chmod +x "$tmp/bin/gh-broken"
+mkdir -p "$tmp/bin-broken" && cp "$tmp/bin/gh-broken" "$tmp/bin-broken/gh"
+out="$(PATH="$tmp/bin-broken:$PATH" MAIN_REF="$C2" bash "$HERE/check-release-sync.sh" 2>&1)" && rc=0 || rc=$?
+st 2 "$rc" "gh 非零退出但有输出 → 显式失败(2)"
+if printf '%s' "$out" | grep -q "^OK:"; then
+    printf '  FAIL  gh 失败时不得打印 OK,实得: %s\n' "$out"; fail=$((fail + 1))
+fi
+
 if [ "$fail" -eq 0 ]; then echo "RESULT: RELEASE-SYNC SELFTEST PASS"; exit 0; fi
 echo "RESULT: RELEASE-SYNC SELFTEST FAIL ($fail)"; exit 1

@@ -46,9 +46,13 @@ if [ -n "${RELEASE_TAG:-}" ]; then
         || die "读不到 release $tag 的 targetCommitish(无此 release / gh 无权限 / 网络失败)"
 else
     # latest:同时取 tag 名,好让报告可操作。
-    read -r tag target < <(gh release view --repo "$REPO" --json tagName,targetCommitish \
-        --jq '"\(.tagName) \(.targetCommitish)"' 2>/dev/null) \
+    # 必须先捕获再判状态:进程替换的退出码不算进 read 的状态,而 gh 半失败(先打
+    # 内容再非零退出)时 read 仍能拿到一行 —— 直接 read 会把这次失败读成一次"成功"。
+    out="$(gh release view --repo "$REPO" --json tagName,targetCommitish \
+        --jq '"\(.tagName) \(.targetCommitish)"' 2>/dev/null)" \
         || die "读不到 latest release —— 本仓可能尚无 release(先发 v0.0.1;主仓 gh release download 会 404),或 gh 无权限 / 网络失败。两种情形都视为失败。"
+    # 这里加换行再拆:read 在最后一行无换行时返回非零,会把正常响应误判成失败。
+    read -r tag target <<<"$out"
 fi
 
 [ -n "${tag:-}" ] || die "本仓尚无 release —— 主仓 CI 的 gh release download 会失败。先发一个 vX.Y.Z"
