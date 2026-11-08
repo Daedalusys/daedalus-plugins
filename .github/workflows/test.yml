@@ -128,3 +128,26 @@ jobs:
             done
             echo "i18n sync OK: $cap"
           done
+
+  release-sync:
+    # main 上的插件改动必须已发版:主仓构建镜像取的是 release 资产,不是 main 源码。
+    # 未发版时镜像里是旧二进制,实机门禁会在旧二进制上判 FAIL(看起来像修复无效)。
+    # PR 事件不跑:PR 的 main 本就是旧的,且尚未发版属正常。
+    name: Release Sync (main covered by latest release)
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # 需要 origin/main 与 release 锚点历史以做祖先判定;浅克隆的深度不够会让
+          # merge-base --is-ancestor 拿不到共同祖先,误判"main 领先"。
+          fetch-depth: 0
+
+      - name: Verify main is covered by the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-release-sync.sh
