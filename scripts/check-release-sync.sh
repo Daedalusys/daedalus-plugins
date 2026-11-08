@@ -25,6 +25,11 @@ resolve_release_commit() {
     if sha="$(git rev-parse --verify --quiet "${raw}^{commit}" 2>/dev/null)"; then
         printf '%s\n' "$sha"; return 0
     fi
+    # CI 的 checkout 只留 refs/remotes/origin/*:裸分支名(gh release create --target main)
+    # 必须再试远端跟踪 ref,否则这个形态在 Actions 里永远解析失败。
+    if sha="$(git rev-parse --verify --quiet "refs/remotes/origin/${raw}^{commit}" 2>/dev/null)"; then
+        printf '%s\n' "$sha"; return 0
+    fi
     # 本地没有该 ref(如分支已删/未 fetch):去远端解析。
     if sha="$(git ls-remote "$REPO" "$raw" 2>/dev/null | head -1 | cut -f1)" && [ -n "$sha" ]; then
         printf '%s\n' "$sha"; return 0
@@ -50,6 +55,11 @@ fi
 
 rel_sha="$(resolve_release_commit "$target")" \
     || die "release $tag 的 targetCommitish='$target' 解析不成 commit(本地无该 ref 且远端也查不到)"
+
+# 解析只是拿到了 sha 字面量;sha 指向的对象不在本地对象库时 merge-base 会报错并
+# 退化成"main 领先"的假红,故先显式确认对象存在。
+git cat-file -e "${rel_sha}^{commit}" 2>/dev/null \
+    || die "release $tag 的锚点 $rel_sha 不在本地对象库(需 git fetch 该 ref 后再跑)"
 
 # main 的 HEAD 已是 release 锚点的祖先(或就是它)→ 一致。
 if git merge-base --is-ancestor "$main_sha" "$rel_sha" 2>/dev/null; then

@@ -59,5 +59,33 @@ st 2 "$rc" "无 release → 显式失败(2)"
 FAKE_TARGET="nonexistent-ref" MAIN_REF="$C2" bash "$HERE/check-release-sync.sh" >/dev/null 2>&1 && rc=0 || rc=$?
 st 2 "$rc" "targetCommitish 解析失败 → 显式失败(2)"
 
+# 6) 分支名形态 + CI checkout 形态:只有 origin/main,没有本地 main。
+#    gh release create --target main 记的是裸分支名;actions/checkout 不建本地分支。
+#    REPO 指向不存在的路径 → ls-remote 兜底腿必失败,证明解析走的是本地
+#    origin/<branch> 而非联网(CI 里 persist-credentials=false,兜底腿不可靠)。
+git init -q --bare "$tmp/remote.git"
+git remote add origin "$tmp/remote.git"
+git push -q origin "$C2:refs/heads/main"
+git checkout -q --detach "$C1"
+git update-ref -d refs/heads/main 2>/dev/null || true
+git fetch -q origin
+out="$(FAKE_TARGET="main" MAIN_REF="origin/main" REPO="$tmp/does-not-exist.git" \
+       bash "$HERE/check-release-sync.sh" 2>&1)" && rc=0 || rc=$?
+st 0 "$rc" "targetCommitish 是裸分支名(仅 origin/<branch> 存在)→ 解析后一致(0)"
+if ! printf '%s' "$out" | grep -q "^OK:"; then
+    printf '  FAIL  应打印 OK 行,实得: %s\n' "$out"; fail=$((fail + 1))
+fi
+
+# 7) 远端解析出的 sha 不在本地对象库(分支未 fetch 的形态)→ 显式失败(2),
+#    不能拿 merge-base 的报错当"main 领先"输出误导性结论。
+git init -q "$tmp/other" && cd "$tmp/other"
+git config user.email t@t && git config user.name t
+echo o > g && git add g && git commit -qm other
+git push -q "$tmp/remote.git" "HEAD:refs/heads/release-branch"
+cd "$tmp/repo"
+out="$(FAKE_TARGET="release-branch" MAIN_REF="origin/main" REPO="$tmp/remote.git" \
+       bash "$HERE/check-release-sync.sh" 2>&1)" && rc=0 || rc=$?
+st 2 "$rc" "release 锚点对象不在本地 → 显式失败(2)"
+
 if [ "$fail" -eq 0 ]; then echo "RESULT: RELEASE-SYNC SELFTEST PASS"; exit 0; fi
 echo "RESULT: RELEASE-SYNC SELFTEST FAIL ($fail)"; exit 1
