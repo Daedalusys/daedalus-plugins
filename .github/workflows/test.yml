@@ -132,9 +132,11 @@ jobs:
   release-sync:
     # main 上的插件改动必须已发版:主仓构建镜像取的是 release 资产,不是 main 源码。
     # 未发版时镜像里是旧二进制,实机门禁会在旧二进制上判 FAIL(看起来像修复无效)。
-    # PR 事件不跑:PR 的 main 本就是旧的,且尚未发版属正常。
+    # 本 job 判的是 main 与 latest release 的关系,与被推的 ref 无关,所以只在 main
+    # push 与手动触发时跑:特性分支上红/绿都是噪声,tag push 时 release 还没建出来,
+    # 必然读不到而假红。PR 事件同理不跑(PR 的 main 本就是旧的)。
     name: Release Sync (main covered by latest release)
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
