@@ -82,7 +82,7 @@ func TestManifestPermissionsMatchCode(t *testing.T) {
 	}
 	read := slices.Clone(m.Permissions.Read)
 	slices.Sort(read)
-	want := []string{"/etc/os-release", "/usr/lib/os-release"}
+	want := []string{"/etc/os-release", "/proc/self/mountinfo", "/usr/lib/os-release"}
 	if !slices.Equal(read, want) {
 		t.Errorf("permissions.read = %v, want %v", read, want)
 	}

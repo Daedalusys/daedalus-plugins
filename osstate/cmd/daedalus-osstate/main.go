@@ -43,6 +43,11 @@ var pathExists = func(p string) bool {
 	return err == nil
 }
 
+// readFile 是唯一读取文件内容的入口;测试注入内存内容,单测永不读宿主 /proc。
+var readFile = func(p string) ([]byte, error) {
+	return os.ReadFile(p)
+}
+
 // recordAudit 追加一条哈希链审计条目(只读工具,尽力而为,失败仅留一行
 // stderr 警告)。采集故障折叠进回包的 error 键而非错误结果,故成功按
 // "success" 记录;仅当结果本身 isError(如序列化失败)按 "error"。
@@ -87,6 +92,11 @@ func shortText(s string) string {
 
 // emptyIn 是无参工具的输入类型(客户端 arguments 必须是 JSON 对象)。
 type emptyIn struct{}
+
+// filesystemIn 是 filesystem_info 的入参:待查询的挂载点,省略时只查根挂载点。
+type filesystemIn struct {
+	Mountpoints []string `json:"mountpoints,omitempty"`
+}
 
 // noArgsSchema 对应 FastMCP 对无参工具生成的 {"type": "object"} 输入模式。
 var noArgsSchema = &jsonschema.Schema{Type: "object"}
@@ -145,6 +155,39 @@ func newServer() *mcp.Server {
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn) (*mcp.CallToolResult, any, error) {
 		res := jsonResult(osStatePayload(newSysinfoService("/").OSRelease()))
 		recordAudit("os_state", res)
+		return res, nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "filesystem_info",
+		Description: "返回挂载点事实（只读）。\n\n" +
+			"读取 /proc/self/mountinfo,按请求顺序给出每个挂载点的 device 与 fstype。\n\n" +
+			"参数：\n" +
+			"    mountpoints: 要查询的挂载点列表；省略时只查 \"/\"。\n\n" +
+			"返回：\n" +
+			"    {\"mountpoints\":[{mountpoint,device,fstype},...]}；任一挂载点不存在时\n" +
+			"    整包退化为 {\"error\": ...}。",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"mountpoints": {
+					Type:        "array",
+					Items:       &jsonschema.Schema{Type: "string"},
+					Description: "要查询的挂载点列表；省略时只查 \"/\"。",
+				},
+			},
+		},
+		Annotations: annotations,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in filesystemIn) (*mcp.CallToolResult, any, error) {
+		data, err := readFile(mountInfoPath)
+		var payload map[string]any
+		if err != nil {
+			payload = map[string]any{"error": fmt.Sprintf("读取 %s 失败: %v", mountInfoPath, err)}
+		} else {
+			payload = filesystemPayload(data, in.Mountpoints)
+		}
+		res := jsonResult(payload)
+		recordAudit("filesystem_info", res)
 		return res, nil, nil
 	})
 

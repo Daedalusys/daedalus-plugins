@@ -11,11 +11,13 @@
   },
   "executable": "bin/daedalus-osstate",
   "tools": [
-    "os_state"
+    "os_state",
+    "filesystem_info"
   ],
   "permissions": {
     "read": [
       "/etc/os-release",
+      "/proc/self/mountinfo",
       "/usr/lib/os-release"
     ],
     "write": [],
