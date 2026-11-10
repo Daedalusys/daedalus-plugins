@@ -1,4 +1,4 @@
-# daedalus-plugins — 6 个 Go 能力插件 monorepo
+# daedalus-plugins — 13 个 Go 能力插件 monorepo
 
 四层结构中的**插件层**:官方 Go 能力插件(capability,
 runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
@@ -21,6 +21,13 @@ runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
 | `sysinfo/` | `daedalus.sysinfo` | `os_release` / `hardware_info` / `network_status` | `sysinfo` | os-release / cpuinfo / meminfo / 网络只读探测 |
 | `service/` | `daedalus.service` | `service.query` / `service.list` | `objectmodel`、`state`、`dirs` | systemd 单元只读观测;唯一声明 `resources`(`kind: service`)的官方插件;状态变更一律走 `daedalus-tx` |
 | `blueprint/` | `daedalus.blueprint` | `blueprint_list` / `blueprint_inspect` / `blueprint_render` / `blueprint_apply` / `blueprint_status` / `blueprint_remove` | `blueprint`、`shellpolicy`(post_check 钩子) | 6 个参数化配置蓝图(nginx/postgres/redis/haproxy);数据经 `//go:embed` 编入二进制,源码侧 `blueprints/` 是唯一事实源 |
+| `dupe/` | `daedalus.dupe` | `scan_large` / `scan_dupes` | `pathguard` | 大文件与重复文件只读扫描;删除走 `daedalus.diskclean` |
+| `diskclean/` | `daedalus.diskclean` | `disk_scan` / `disk_estimate` / `disk_explain` / `disk_clean` | `confirmation`、`pathguard` | 磁盘清理:扫描 + 显式 confirm_token,变更经 `daedalus-tx` `disk.clean` 适配器 |
+| `organize/` | `daedalus.organize` | `organize_plan` / `organize_preview` / `organize_apply` | `confirmation`、`pathguard`、`policy` | 按规则(by_type/by_date/by_size/by_ext)整理文件;变更经 `daedalus-tx` `organize.move` 适配器 |
+| `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图(游标分页) |
+| `proc/` | `daedalus.proc` | `proc_list` / `proc_tree` / `proc_fds` / `proc_listen` / `proc_cgroup` | 直读 `/proc` | 进程/fd/监听端口/cgroup 只读侦察;零 exec,也不做进程控制(走 `daedalus-tx`) |
+| `osstate/` | `daedalus.osstate` | `os_state` / `filesystem_info` | `sysinfo` | OS 身份(发行版/包管理器/init)与挂载点事实,只读 |
+| `snapshot/` | `daedalus.snapshot` | `snapshot_backends` / `snapshot_list` | 无(仅 `audit`) | 快照后端是否就位 + 快照列举,只读;不创建、不删除、不回滚 |
 
 ## 命名语义(目录名 ≠ 系统组件,是"能力提供者")
 
@@ -38,7 +45,7 @@ runtime=native)的 monorepo,独立仓根。copilot 插件(Deno)留主仓
 systemd 单元、CI、import 路径、copilot 硬编码引用锁定,改名成本极高且无功能收益;
 显示名则随时可以按"能力语义"调整,让人类一眼看懂这个插件**提供什么能力**。
 
-6 个插件目录名 → 实际能力对照(目录名 ≠ 系统组件):
+13 个插件目录名 → 实际能力对照(目录名 ≠ 系统组件):
 
 | 目录名 / id | 显示名(`name`) | 实际能力(不是……) |
 |-------------|----------------|--------------------|
@@ -48,6 +55,13 @@ systemd 单元、CI、import 路径、copilot 硬编码引用锁定,改名成本
 | `sysinfo/` (`daedalus.sysinfo`) | Daedalus System Information | 只读系统信息探测能力 |
 | `service/` (`daedalus.service`) | Daedalus Service Query | 只读服务状态查询能力——**不是** systemd 服务,也不改服务状态(状态变更走 `daedalus-tx`) |
 | `blueprint/` (`daedalus.blueprint`) | Daedalus Blueprint | 参数化配置蓝图渲染/应用能力 |
+| `dupe/` (`daedalus.dupe`) | Daedalus Large & Duplicate File Scanner | 大文件与重复文件只读扫描能力——**不是**删除工具(删除走 `daedalus.diskclean`) |
+| `diskclean/` (`daedalus.diskclean`) | Daedalus Disk Cleanup (Cache / Journal / Coredump / Old Kernel) | 磁盘清理能力(显式确认 + `daedalus-tx`)——**不是**包管理器 |
+| `organize/` (`daedalus.organize`) | Daedalus File Organizer (By Type / Date / Size / Extension) | 按规则整理文件能力(事务性 rename)——**不是**任意目录重排,也不删除文件 |
+| `trace/` (`daedalus.trace`) | Daedalus Audit Trace Viewer | 审计链回放只读视图——**不是**重放执行,也不做链完整性校验 |
+| `proc/` (`daedalus.proc`) | Daedalus Process Reconnaissance | 进程只读侦察能力——**不是**进程控制(kill/signal 走 `daedalus-tx`) |
+| `osstate/` (`daedalus.osstate`) | Daedalus OS State | 操作系统身份与挂载点事实能力——**不是**包管理器,也不改系统状态 |
+| `snapshot/` (`daedalus.snapshot`) | Daedalus Snapshot Capability | 快照后端探测与列举能力——**不是**快照工具,不创建/不删除/不回滚 |
 
 **约定**:目录名与 id 永不改;显示名 `name` 按"XX 能力"语义命名,改动只影响展示层。
 
@@ -92,7 +106,7 @@ fs/
 ## 开发与测试
 
 ```bash
-for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do   # 9 模块全量
+for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot; do   # 13 模块全量
     (cd "$cap" && go build ./... && go test ./...)
 done
 ```

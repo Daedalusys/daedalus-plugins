@@ -63,7 +63,7 @@ go test ./...
 
 ```bash
 # 逐 cap 独立跑（仓根无 go.mod，workspace 形态下不可用）
-for cap in fs shell pkg sysinfo service blueprint dupe trace proc; do
+for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot; do
     (cd "$cap" && go build ./... && go test ./...)
 done
 ```

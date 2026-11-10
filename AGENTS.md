@@ -1,13 +1,13 @@
 # daedalus-plugins — Knowledge Base
 
 **Generated:** 2026-09-21(2026-10-21 校正 cap 清单与发布链)
-**Repo:** `github.com/Daedalusys/daedalus-plugins/<cap>` (11 子模块 monorepo)
+**Repo:** `github.com/Daedalusys/daedalus-plugins/<cap>` (13 子模块 monorepo)
 **Siblings:** `../daedalus-core/` (Daedalusys, runtime + image), `../daedalus-sdk/` (11 安全核心包)
 
 ## OVERVIEW
-Daedalus 插件仓根 = 四层结构中的**插件层**。11 个 Go 能力插件
+Daedalus 插件仓根 = 四层结构中的**插件层**。13 个 Go 能力插件
 (`fs` / `shell` / `pkg` / `sysinfo` / `service` / `blueprint` 为 6 个官方出厂件,
-`dupe` / `diskclean` / `organize` / `trace` / `proc` 为观测与清理型,均 `runtime=native`)
+`dupe` / `diskclean` / `organize` / `trace` / `proc` / `osstate` / `snapshot` 为观测与清理型,均 `runtime=native`)
 的 monorepo,独立仓根。**copilot 插件**(Deno) 留主仓 `../daedalus-core/plugin/copilot/`,**不在此仓**。
 
 每个插件一个子目录、内含 `daedalus.plugin.json` (manifest) + `cmd/` (Go 源码) +
@@ -21,7 +21,7 @@ Daedalus 插件仓根 = 四层结构中的**插件层**。11 个 Go 能力插件
 ## STRUCTURE
 ```
 daedalus-plugins/
-├── go.work                          # 聚合 9 个插件模块 (use .)
+├── go.work                          # 聚合 13 个插件模块 (use .)
 ├── fs/                              # daedalus.fs  - 路径作用域文件读写
 │   ├── daedalus.plugin.json
 │   ├── cmd/daedalus-fs/             # Go 源码 (go-sdk stdio MCP 服务器)
@@ -73,6 +73,8 @@ daedalus-plugins/
 | `organize/` | `daedalus.organize` | `organize_plan` / `organize_preview` / `organize_apply` | `confirmation`, `pathguard`, `policy` | 按规则文件整理(by_type/by_date/by_size/by_ext):plan 生成 confirm_token + 冲突列表,preview 解析 rename/skip/abort,apply 经 daedalus-tx `organize.move` 适配器事务性 os.Rename — **不是** 任意目录重排(白名单 `pathguard.ValidateWritePath` 二档),也不是删除(删除走 `daedalus.diskclean`) |
 | `trace/` | `daedalus.trace` | `trace_session` / `trace_tool` / `trace_tx` / `trace_summary` | `audit` | audit.jsonl 哈希链回放只读视图 (L0, 游标分页) — **不是** 重放执行(那是 030 workflow),也不做链完整性校验(`daedalus-audit verify`) |
 | `proc/` | `daedalus.proc` | `proc_list` / `proc_tree` / `proc_fds` / `proc_listen` / `proc_cgroup` | —(直读 `/proc`) | 进程/fd/监听端口/cgroup 只读侦察 (L0, 零 exec) — **不是** 进程控制(kill/signal/renice 走 `daedalus-tx`) |
+| `osstate/` | `daedalus.osstate` | `os_state` / `filesystem_info` | `sysinfo` | OS 身份(发行版/包管理器/init)与挂载点事实,只读,零 exec — **不是** 包管理器,也不改系统状态 |
+| `snapshot/` | `daedalus.snapshot` | `snapshot_backends` / `snapshot_list` | —(仅 `audit`) | 快照后端是否就位 + 快照列举,只读 — **不是** 快照工具,不创建/不删除/不回滚 |
 
 ## 命名语义 (目录名 ≠ 系统组件,是"能力提供者")
 
@@ -90,9 +92,9 @@ daedalus-plugins/
 - **插件布局统一**: 每个 `<cap>/` = `daedalus.plugin.json` + `cmd/daedalus-<cap>/` + `bin/daedalus-<cap>` + `go.mod` + `go.sum` (+ 可选 `i18n/`,`blueprint/` 独有 `blueprints/`)。
 - **独立 go.mod**: 每插件 `module github.com/Daedalusys/daedalus-plugins/<cap>`,**不聚合到根模块**;跨插件共享代码 → 提 SDK,不要在本仓共享子包。
 - **跨仓 dev 桥**: 各插件 `go.work.example` (`use ( . ../../daedalus-sdk )`) 是单仓 clone 兜底;三仓平级 clone 时以主仓 `../daedalus-core/go.work` 为准 — 它 `use` 全部 cap 并对 SDK 的两个 require 版本各钉一行 replace,workspace 级 replace 覆盖模块级,因此本地无需符号链接桥。
-- **release 即供料口**: 本仓经 `.github/workflows/release.yml` 发布 GitHub release(11 个 `daedalus.<cap>.plugin.zip`),主仓 CI 构建镜像时用 `gh release download` 取 **latest**。因此 release 是链路的一环,不是可跳过的可选步骤;`bin/` 与 zip 都不入库。
+- **release 即供料口**: 本仓经 `.github/workflows/release.yml` 发布 GitHub release(13 个 `daedalus.<cap>.plugin.zip`),主仓 CI 构建镜像时用 `gh release download` 取 **latest**。因此 release 是链路的一环,不是可跳过的可选步骤;`bin/` 与 zip 都不入库。
 - **Blueprint 数据单一事实源**: `blueprint/blueprints/<id>/` 是唯一权威;主仓 `just blueprint-embed` rsync 到 `cmd/daedalus-blueprint/blueprints/` 供 `//go:embed`,**复制产物不入库**。
-- **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 4 个不写。`name="*"` 匹配所有资源。
+- **manifest `resources`**: `service` 和 `pkg` 两个插件声明 `resources[]` (`kind=service` / `kind=package`),其余 11 个不写。`name="*"` 匹配所有资源。
 - **i18n**: locale 文件在 `<cap>/i18n/<locale>.json` (POSIX 下划线命名);manifest 声明 `"i18n": ["en_US", "zh_CN"]` 数组,en_US 必定位兜底。
 - **禁止注释引用计划编号**: `todo N` / `决策 N` / `oracle review` / `round-N` 等进度信息写 commit message 或 `.omo/plans/`,不进源码注释。
 - **注释只写 why,不写 what**: 代码可自解释处不加注释。
@@ -106,7 +108,7 @@ daedalus-plugins/
 
 1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./cmd/... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
-3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 11 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
+3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 13 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
 4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集);
 
    **门禁**: `test.yml` 的 `release-sync` job 会在 main 领先 latest release 时变红。
@@ -138,7 +140,7 @@ cd shell && go build ./... && go test ./...
 cd blueprint && go build ./... && go test ./...
 
 # 全仓构建/测试 (仓根不是模块,必须逐 cap 独立跑;与 CI test.yml 同款循环)
-for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc; do
+for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot; do
     (cd "$cap" && go build ./... && go test ./...)
 done
 
@@ -161,5 +163,5 @@ daedalus-host -dir <unpacked-plugin-dir> verify daedalus.fs
 - **跨仓契约钉子**: Go↔Deno 跨语言契约 (`tests/deno/shellpolicy_contract.test.ts` 在主仓) + 各仓漂移测试 (三点防漂移链) 是 SDK / Copilot / 插件三方同步的强制约束。
 - **Blueprint 数据双源陷阱**: 源码侧 `blueprint/blueprints/` 与构建侧 `cmd/daedalus-blueprint/blueprints/` (//go:embed 目标) **同名目录**但职责不同 — 前者是单一事实源,后者是构建期复制产物(不入库);改蓝图**只改前者**,跑 `just blueprint-embed` 重生后者。
 - **service 资源范围**: `service` 插件是**唯一**声明 `resources[].kind=service` 的官方插件,作用域 `name=*` 匹配所有 systemd 单元;新增资源 Kind 必经 `daedalus-sdk/objectmodel`。
-- **本仓是供料仓,不是终端发布物**: 有版本 tag 与 GitHub release(`release.yml` 出 11 个 zip),但用户可见的发布物仍是主仓镜像;latest zip 一旦落后于主仓 `policy.toml`,镜像构建就会在 76 失败。
+- **本仓是供料仓,不是终端发布物**: 有版本 tag 与 GitHub release(`release.yml` 出 13 个 zip),但用户可见的发布物仍是主仓镜像;latest zip 一旦落后于主仓 `policy.toml`,镜像构建就会在 76 失败。
 - 老仓 `Daedalusys/Daedalusys` 已于 2026-09-21 archived,历史 issue 保留可读;新 issue 一律开在本仓。

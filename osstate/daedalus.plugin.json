@@ -1,0 +1,26 @@
+{
+  "id": "daedalus.osstate",
+  "name": "Daedalus OS State",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "MIT",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-osstate",
+  "tools": [
+    "os_state",
+    "filesystem_info"
+  ],
+  "permissions": {
+    "read": [
+      "/etc/os-release",
+      "/proc/self/mountinfo",
+      "/usr/lib/os-release"
+    ],
+    "write": [],
+    "run": []
+  }
+}

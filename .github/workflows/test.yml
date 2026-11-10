@@ -32,7 +32,7 @@ permissions:
 
 # cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
 env:
-  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc"
+  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot"
 
 jobs:
   test:
