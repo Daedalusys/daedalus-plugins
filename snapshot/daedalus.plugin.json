@@ -1,0 +1,28 @@
+{
+  "id": "daedalus.snapshot",
+  "name": "Daedalus Snapshot Capability",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "MIT",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-snapshot",
+  "tools": [
+    "snapshot_backends"
+  ],
+  "permissions": {
+    "read": [],
+    "write": [],
+    "run": [
+      "/bin/btrfs",
+      "/bin/rsync",
+      "/sbin/btrfs",
+      "/usr/bin/btrfs",
+      "/usr/bin/rsync",
+      "/usr/sbin/btrfs"
+    ]
+  }
+}
