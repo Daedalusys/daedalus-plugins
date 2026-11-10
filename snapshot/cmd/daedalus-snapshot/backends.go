@@ -19,11 +19,22 @@ type backendProbe struct {
 }
 
 // backendProbes 的顺序即推荐优先级:先写的优先。优先级依据是"这个后端能否
-// 提供可回滚的真快照",而非字母序 —— btrfs 是子卷快照,rsync 只是文件拷贝兜底。
+// 提供可回滚的真快照",而非字母序 —— btrfs 子卷与 lvm/snapper 是真快照,
+// rsync 只是文件拷贝兜底。
 var backendProbes = []backendProbe{
 	{
 		Name:        "btrfs",
 		Candidates:  []string{"/usr/bin/btrfs", "/usr/sbin/btrfs", "/bin/btrfs", "/sbin/btrfs"},
+		VersionArgs: []string{"--version"},
+	},
+	{
+		Name:        "lvm",
+		Candidates:  []string{"/usr/sbin/lvs", "/sbin/lvs", "/usr/bin/lvs", "/bin/lvs"},
+		VersionArgs: []string{"--version"},
+	},
+	{
+		Name:        "snapper",
+		Candidates:  []string{"/usr/bin/snapper", "/usr/sbin/snapper"},
 		VersionArgs: []string{"--version"},
 	},
 	{

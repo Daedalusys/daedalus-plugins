@@ -83,9 +83,6 @@ func shortText(s string) string {
 	return string(r)
 }
 
-// noArgsSchema 对应 FastMCP 对无参工具生成的 {"type": "object"} 输入模式。
-var noArgsSchema = &jsonschema.Schema{Type: "object"}
-
 func main() {
 	server := newServer()
 
@@ -151,6 +148,33 @@ func newServer() *mcp.Server {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in backendsIn) (*mcp.CallToolResult, any, error) {
 		res := jsonResult(snapshotBackendsPayload(ctx, in))
 		recordAudit("snapshot_backends", res)
+		return res, nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "snapshot_list",
+		Description: "列举现有快照（只读）。\n\n" +
+			"按后端执行只读列举：btrfs `subvolume list -o /`、lvm `lvs` 查询、\n" +
+			"snapper `--csvout list`；rsync 没有快照注册表，恒为空数组。\n" +
+			"本工具绝不创建、删除或回滚快照。\n\n" +
+			"参数：\n" +
+			"    backend: btrfs|lvm|snapper|rsync；省略时用 snapshot_backends 的 recommended。\n\n" +
+			"返回：\n" +
+			"    {\"backend\":...,\"snapshots\":[{id,name},...]}；后端未知或不可用时是空数组\n" +
+			"    （不是错误），命令真执行失败时附带 error 键。",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"backend": {
+					Type:        "string",
+					Description: "btrfs|lvm|snapper|rsync；省略时用 snapshot_backends 的 recommended。",
+				},
+			},
+		},
+		Annotations: annotations,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in snapshotListIn) (*mcp.CallToolResult, any, error) {
+		res := jsonResult(snapshotListPayload(ctx, in))
+		recordAudit("snapshot_list", res)
 		return res, nil, nil
 	})
 
