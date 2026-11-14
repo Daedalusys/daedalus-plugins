@@ -58,10 +58,10 @@ const (
 	strategySkip   = "skip"
 	strategyAbort  = "abort"
 
-	bucketSmall  = "<1MB"
-	bucketMid    = "1-10MB"
-	bucketLarge  = "10-100MB"
-	bucketHuge   = ">100MB"
+	bucketSmall = "<1MB"
+	bucketMid   = "1-10MB"
+	bucketLarge = "10-100MB"
+	bucketHuge  = ">100MB"
 
 	progressStep = 50
 )
@@ -119,10 +119,10 @@ type previewFinalMove struct {
 }
 
 type previewResult struct {
-	Status              string            `json:"status"`
-	Reason              string            `json:"reason,omitempty"`
+	Status              string             `json:"status"`
+	Reason              string             `json:"reason,omitempty"`
 	FinalMoves          []previewFinalMove `json:"final_moves,omitempty"`
-	EstimatedTotalBytes int64             `json:"estimated_total_bytes,omitempty"`
+	EstimatedTotalBytes int64              `json:"estimated_total_bytes,omitempty"`
 }
 
 type applyResult struct {
@@ -140,12 +140,12 @@ type planStore struct {
 }
 
 type storedPlan struct {
-	SourceDir  string
-	Rule       string
-	Moves      []moveEntry
-	Conflicts  []conflictEntry
-	TargetMap  map[string]int // to → 出现次数(用于 plan 内去重)
-	FinalMap   map[string]int // 上一轮 preview 的 final to(用于 preview 期间避免反复重算)
+	SourceDir string
+	Rule      string
+	Moves     []moveEntry
+	Conflicts []conflictEntry
+	TargetMap map[string]int // to → 出现次数(用于 plan 内去重)
+	FinalMap  map[string]int // 上一轮 preview 的 final to(用于 preview 期间避免反复重算)
 }
 
 var plans = &planStore{plans: make(map[string]*storedPlan)}
@@ -532,8 +532,8 @@ func dirForRule(path string, info os.FileInfo, rule string) (string, error) {
 // sizeBucket 把字节数落桶:四个固定桶,边界含下界不含上界,>100MB 兜底。
 func sizeBucket(n int64) string {
 	const (
-		mb1  = int64(1) << 20
-		mb10 = int64(10) << 20
+		mb1   = int64(1) << 20
+		mb10  = int64(10) << 20
 		mb100 = int64(100) << 20
 	)
 	switch {
