@@ -1,0 +1,94 @@
+{{define "render"}}
+<h1 class="view-title">渲染预览{{with .Render.Display}} · {{.}}{{end}}</h1>
+<p class="view-lead">只生成内容与差异，<b>不写入系统</b>。满意后进入“应用”。</p>
+
+{{if .Render.NeedPick}}
+<div class="panel">
+  <div class="body" style="color:var(--ink-3)">{{if .Render.ErrorMsg}}{{.Render.ErrorMsg}}{{else}}请先从“蓝图列表”选择一个蓝图。{{end}}</div>
+</div>
+{{else}}
+<div class="layout">
+  <form class="panel" id="render-form" data-blueprint="{{.Render.Blueprint}}" novalidate>
+    <header>参数 <span class="hint" style="margin-left:auto;font-weight:400">键与 schema.json 对应</span></header>
+    <div class="body">
+      {{range .Render.Fields}}
+      {{if .IsBool}}
+      <label class="check" style="margin-top:12px">
+        <input type="checkbox" id="f-{{.Name}}" name="{{.Name}}"{{if .Checked}} checked{{end}}>
+        {{.Label}}{{if .Required}} <span class="hint" style="display:inline">必填</span>{{end}}
+      </label>
+      {{if .Description}}<span class="hint" style="margin-left:24px">{{.Description}}</span>{{end}}
+      {{else}}
+      <label for="f-{{.Name}}">{{.Label}}
+        <span class="hint">{{if .Required}}必填 · {{end}}{{.Description}}</span>
+      </label>
+      <input type="text" id="f-{{.Name}}" name="{{.Name}}" value="{{.Value}}"
+             autocomplete="off" spellcheck="false">
+      {{end}}
+      {{end}}
+
+      <div class="actions">
+        <button type="submit" class="btn" id="btn-preview">预览（不写盘）</button>
+      </div>
+    </div>
+  </form>
+
+  <div>
+    {{if .Render.ErrorMsg}}
+    <div class="notice err" id="render-error" role="alert">
+      <b>渲染失败</b>
+      <span>{{.Render.ErrorMsg}}</span>
+    </div>
+    {{end}}
+
+    {{with .Render.Preview}}
+    <div class="panel" id="render-result">
+      <header>
+        差异预览
+        <span class="hint" style="margin-left:auto;font-weight:400">未写入磁盘</span>
+      </header>
+      <div class="meta">
+        <span>目标 <b>{{.TargetPath}}</b></span>
+        <span>plan_id <b>{{.PlanID}}</b></span>
+        {{if $.Render.Reload}}<span>reload <b>{{$.Render.Reload}}</b></span>{{end}}
+      </div>
+      <div class="diffsum" aria-label="差异统计">
+        <span class="add-n">+ {{.Added}} 行</span>
+        <span class="del-n">− {{.Removed}} 行</span>
+        {{if .NewFile}}<span style="color:var(--ink-3)">新建文件</span>{{end}}
+        {{if and (not .NewFile) (not .Diff)}}<span style="color:var(--ink-3)">与现有文件一致</span>{{end}}
+      </div>
+
+      <div class="diffwrap" role="region" aria-label="差异内容" tabindex="0">
+        {{range .Diff}}<div class="ln {{.Class}}"><span class="no">{{.OldNo}}</span><span class="no">{{.NewNo}}</span><span class="sign">{{.Sign}}</span><span>{{.Text}}</span></div>
+        {{end}}
+      </div>
+
+      {{if .Warnings}}
+      <div class="notice warn" role="status" style="margin:12px 14px 0">
+        <b>提示</b>
+        {{range .Warnings}}<div>{{.}}</div>{{end}}
+      </div>
+      {{end}}
+
+      <details>
+        <summary>完整渲染内容（rendered_content）</summary>
+        <pre class="raw">{{.RenderedContent}}</pre>
+      </details>
+
+      <div class="body" style="border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span style="color:var(--ink-2); font-size:13px;">确认内容无误后，前往“应用”页提交。</span>
+        <button type="button" class="btn ghost" data-goto="apply" style="margin-left:auto">去应用 →</button>
+      </div>
+    </div>
+    {{else}}
+    {{if not .Render.ErrorMsg}}
+    <div class="panel" id="render-empty">
+      <div class="body" style="color:var(--ink-3)">点击左侧“预览”后，这里会显示目标路径、差异与渲染内容。</div>
+    </div>
+    {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}

@@ -65,22 +65,29 @@ func registerInspectTool(server *mcp.Server, a *app) {
 // listIn 是 blueprint_list 的输入(In 类型为 map 以满足 object 约束)。
 type listIn map[string]any
 
+// blueprintSummaries 遍历注册表生成只读摘要;MCP blueprint_list 与 ui 子命令
+// 的列表页共用同一份投影,避免两条入口各自维护字段映射。
+func blueprintSummaries(a *app) []blueprintSummary {
+	summaries := make([]blueprintSummary, 0, len(a.reg.orderedIDs()))
+	for _, id := range a.reg.orderedIDs() {
+		cb := a.reg.byID[id]
+		b := cb.Blueprint
+		summaries = append(summaries, blueprintSummary{
+			ID:          b.ID,
+			DisplayName: b.DisplayName,
+			Version:     b.Version,
+			Category:    b.Category,
+			Description: b.Description,
+		})
+	}
+	return summaries
+}
+
 // handleList 是 blueprint_list 的审计入口:纯只读遍历注册表,正常恒
 // success;序列化故障(理论面)记 error。args 为空对象,尽力而为。
 func handleList(a *app) func(context.Context, *mcp.CallToolRequest, listIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, _ listIn) (*mcp.CallToolResult, any, error) {
-		summaries := make([]blueprintSummary, 0, len(a.reg.orderedIDs()))
-		for _, id := range a.reg.orderedIDs() {
-			cb := a.reg.byID[id]
-			b := cb.Blueprint
-			summaries = append(summaries, blueprintSummary{
-				ID:          b.ID,
-				DisplayName: b.DisplayName,
-				Version:     b.Version,
-				Category:    b.Category,
-				Description: b.Description,
-			})
-		}
+		summaries := blueprintSummaries(a)
 		res := jsonResult(summaries)
 		outcome := "success"
 		if res.IsError {
@@ -106,10 +113,25 @@ func handleInspect(a *app) func(context.Context, *mcp.CallToolRequest, inspectIn
 }
 
 func inspectResult(a *app, in inspectIn) (*mcp.CallToolResult, string, error) {
-	cb, ok := a.reg.get(in.Name)
+	detail, ok := blueprintDetailOf(a, in.Name)
 	if !ok {
 		err := fmt.Errorf("blueprint %q 不存在", in.Name)
 		return toolError(err), "denied", err
+	}
+	res := jsonResult(detail)
+	if res.IsError {
+		return res, "error", nil
+	}
+	return res, "success", nil
+}
+
+// blueprintDetailOf 返回单个蓝图的完整详情。ok=false 表示蓝图不存在。
+// 纯函数(不落审计、不产出 MCP 结果形态),供 MCP blueprint_inspect 与 ui
+// 列表页(逐条取 output_path_template / reload_service)共用。
+func blueprintDetailOf(a *app, name string) (blueprintDetail, bool) {
+	cb, ok := a.reg.get(name)
+	if !ok {
+		return blueprintDetail{}, false
 	}
 	b := cb.Blueprint
 	detail := blueprintDetail{
@@ -131,9 +153,5 @@ func inspectResult(a *app, in inspectIn) (*mcp.CallToolResult, string, error) {
 			detail.Schema = s
 		}
 	}
-	res := jsonResult(detail)
-	if res.IsError {
-		return res, "error", nil
-	}
-	return res, "success", nil
+	return detail, true
 }

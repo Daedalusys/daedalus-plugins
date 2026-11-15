@@ -35,19 +35,17 @@ const serverName = "daedalus-blueprint"
 const blueprintIdentity = "daedalus-blueprint"
 
 func main() {
-	// 单一事实源:启动时读 shared/policy.toml 并接线(fail-closed)。
-	if err := applyPolicy(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
-		os.Exit(1)
+	// 子命令分发:ui 是独立的常驻 HTTP 模式(见 ui.go),不能挂在 stdio MCP
+	// 进程上 —— MCP 模式下每次工具调用起一个进程、用完即退。
+	if len(os.Args) > 1 && os.Args[1] == "ui" {
+		os.Exit(runUI(os.Args[2:]))
 	}
 
-	// 注册表:嵌入数据启动期编译,缺一即 panic(fail-closed)。
-	reg, err := newRegistry(blueprint.MustLoad(EmbeddedBlueprints()))
+	app, err := initRuntime()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
 		os.Exit(1)
 	}
-	app := newApp(reg)
 	server := newServer(app)
 
 	// SIGINT/SIGTERM 触发优雅退出;Run 返回后错误信息写 stderr,保持 stdout
@@ -59,6 +57,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s server error: %v\n", serverName, err)
 		os.Exit(1)
 	}
+}
+
+// initRuntime 完成启动期接线(策略 fail-closed 加载 + 嵌入蓝图编译),返回
+// 运行期 app。stdio MCP 主循环与 ui 子命令共用同一条初始化路径。
+func initRuntime() (*app, error) {
+	// 单一事实源:启动时读 shared/policy.toml 并接线(fail-closed)。
+	if err := applyPolicy(); err != nil {
+		return nil, err
+	}
+	// 注册表:嵌入数据启动期编译,缺一即 panic(fail-closed)。
+	reg, err := newRegistry(blueprint.MustLoad(EmbeddedBlueprints()))
+	if err != nil {
+		return nil, err
+	}
+	return newApp(reg), nil
 }
 
 // app 聚合服务器运行期状态:编译注册表 + plan store。handler 经 newServer 注入

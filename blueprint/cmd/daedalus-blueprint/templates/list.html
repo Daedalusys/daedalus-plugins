@@ -1,0 +1,33 @@
+{{define "list"}}
+<section role="tabpanel" id="view-list" aria-labelledby="tab-list"{{if ne .Active "list"}} hidden{{end}}>
+  <h1 class="view-title">蓝图列表</h1>
+  <p class="view-lead">选择一个蓝图，填写参数后进入“渲染预览”。预览不会写入系统。</p>
+
+  <table class="bp-table">
+    <thead>
+      <tr>
+        <th scope="col" style="width:26%">蓝图</th>
+        <th scope="col">说明</th>
+        <th scope="col" style="width:24%">管理的资源</th>
+        <th scope="col" style="width:110px"><span class="sr-only">操作</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Blueprints}}
+      <tr>
+        <td>
+          <div class="bp-name">{{.DisplayName}}</div>
+          <span class="bp-id">{{.ID}}</span>
+          {{if .Category}}<span class="cat">{{.Category}}</span>{{end}}
+        </td>
+        <td class="bp-desc">{{.Description}}</td>
+        <td class="bp-res">
+          {{if .OutputPath}}<span class="chip">{{.OutputPath}}</span><br>reload · {{.Reload}}{{else}}—{{end}}
+        </td>
+        <td><a class="btn-go" href="/?view=render&amp;name={{.ID}}">填写参数 →</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

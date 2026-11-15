@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -69,36 +70,53 @@ func registerApplyTool(server *mcp.Server, a *app) {
 	}, handleApply(a))
 }
 
-// handleApply 是 blueprint_apply 的审计 choke point:把判定逻辑交给
-// applyResult,自己只负责"每次调用恰记一条链"。审计写在最后一步之外——
-// 拒绝路径(plan/令牌/白名单任一关)同样是操作员需要回看的轨迹,漏记即
-// 等于给 agent 留了一条无痕试错通道。args 只带 name / plan_id / 成功或
-// 落盘后的 target,confirm_token 值与渲染内容(可能含 secret 引用)严禁进链。
+// handleApply 是 blueprint_apply 的 MCP 入口:业务判定与审计都在 applyOnce,
+// 这里只把结局格式化为 MCP 结果形态(UI 子命令复用 applyOnce)。
 func handleApply(a *app) func(context.Context, *mcp.CallToolRequest, applyIn) (*mcp.CallToolResult, any, error) {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in applyIn) (*mcp.CallToolResult, any, error) {
-		res, target, outcome, cause := applyResult(ctx, a, in)
-		args := map[string]any{"name": in.Name, "plan_id": in.PlanID}
-		if target != "" {
-			args["target"] = target
+		out, _, outcome, cause := applyOnce(ctx, a, in)
+		if outcome != "success" {
+			if cause == nil {
+				cause = fmt.Errorf("apply 结果序列化失败")
+			}
+			return toolError(cause), nil, nil
 		}
-		recordAudit("blueprint_apply", outcome, args, cause)
-		return res, nil, nil
+		return jsonResult(out), nil, nil
 	}
 }
 
-// applyResult 判定一次 apply 的结局,返回 (工具结果, 已进入落盘流程的目标路径,
+// applyOnce 是 blueprint_apply 的业务判定 + 审计 choke point 主体:把判定逻辑
+// 交给 applyImpl,自己只负责"每次调用恰记一条链"。审计写在最后一步之外——
+// 拒绝路径(plan/令牌/白名单任一关)同样是操作员需要回看的轨迹,漏记即
+// 等于给 agent 留了一条无痕试错通道。args 只带 name / plan_id / 成功或
+// 落盘后的 target,confirm_token 值与渲染内容(可能含 secret 引用)严禁进链。
+//
+// UI 子命令与 MCP handler 共用本函数:两条入口的审计口径(每次调用恰一条、
+// 词表只有 success/denied/error)因此不会漂移。
+func applyOnce(ctx context.Context, a *app, in applyIn) (applyOut, string, string, error) {
+	out, target, outcome, cause := applyImpl(ctx, a, in)
+	args := map[string]any{"name": in.Name, "plan_id": in.PlanID}
+	if target != "" {
+		args["target"] = target
+	}
+	recordAudit("blueprint_apply", outcome, args, cause)
+	return out, target, outcome, cause
+}
+
+// applyImpl 判定一次 apply 的结局,返回 (结果, 已进入落盘流程的目标路径,
 // 结局 token, 失败因)。拒绝门一律 denied,写盘/post_check/reload/回滚故障为 error。
-func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, string, string, error) {
+// 只返回业务事实,不含审计与 MCP 结果形态。
+func applyImpl(ctx context.Context, a *app, in applyIn) (applyOut, string, string, error) {
 	plan, ok := a.plans.get(in.PlanID)
 	if !ok {
 		err := fmt.Errorf("plan %q 不存在(先 blueprint_render)", in.PlanID)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 
 	// 防串用:name 必须与 plan 记录的蓝图一致。
 	if plan.Name != in.Name {
 		err := fmt.Errorf("plan %q 属于蓝图 %q,与入参 %q 不匹配", in.PlanID, plan.Name, in.Name)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 
 	// confirm_token 校验(成功即消费,单次有效)。先比对用户提供的 token 与
@@ -107,18 +125,18 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 	// 比对 token 串)。
 	if plan.Token.Token == "" {
 		err := fmt.Errorf("plan %q 无关联确认令牌(render 异常)", in.PlanID)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 	if in.ConfirmToken != plan.Token.Token {
 		err := fmt.Errorf("confirm_token 与 plan %q 不匹配", in.PlanID)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 	if err := confirmation.VerifyConfirmToken(in.PlanID, confirmation.ConfirmToken{
 		Token:     in.ConfirmToken,
 		SubjectID: in.PlanID,
 		Expires:   plan.Token.Expires,
 	}); err != nil {
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 
 	// 目标路径白名单(纵深防御,防 plan store 被篡改)。除词法前缀外,必须
@@ -126,16 +144,16 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 	// /etc/shadow 等敏感文件的 symlink,词法校验通过但写入实际落到白名单外。
 	if !validateOutputPath(a.outputDirs, plan.Target) {
 		err := fmt.Errorf("目标路径 %q 越出允许目录白名单", plan.Target)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 	if err := validateOutputPathResolved(a.outputDirs, plan.Target); err != nil {
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 
 	cb, ok := a.reg.get(in.Name)
 	if !ok {
 		err := fmt.Errorf("blueprint %q 不存在", in.Name)
-		return toolError(err), "", "denied", err
+		return applyOut{}, "", "denied", err
 	}
 
 	hadOld := false
@@ -145,10 +163,10 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 		oldContent = data
 	}
 	if err := os.MkdirAll(filepath.Dir(plan.Target), 0o755); err != nil {
-		return toolErrorf("创建目标目录失败: %v", err), plan.Target, "error", err
+		return applyOut{}, plan.Target, "error", fmt.Errorf("创建目标目录失败: %v", err)
 	}
 	if err := os.WriteFile(plan.Target, []byte(plan.Rendered), 0o644); err != nil {
-		return toolErrorf("写入配置失败: %v", err), plan.Target, "error", err
+		return applyOut{}, plan.Target, "error", fmt.Errorf("写入配置失败: %v", err)
 	}
 
 	// rollback 闭包:失败时恢复旧快照或删除新文件。回滚本身的错误不能被
@@ -174,9 +192,9 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 			rollback()
 			if rollbackErr != nil {
 				wrapped := fmt.Errorf("post_check 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr)
-				return toolError(wrapped), plan.Target, "error", wrapped
+				return applyOut{}, plan.Target, "error", wrapped
 			}
-			return toolErrorf("post_check 失败(已回滚): %v", err), plan.Target, "error", err
+			return applyOut{}, plan.Target, "error", fmt.Errorf("post_check 失败(已回滚): %v", err)
 		}
 	}
 
@@ -184,9 +202,9 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 		rollback()
 		if rollbackErr != nil {
 			wrapped := fmt.Errorf("reload 失败(已回滚): %v; 回滚错误: %v", err, rollbackErr)
-			return toolError(wrapped), plan.Target, "error", wrapped
+			return applyOut{}, plan.Target, "error", wrapped
 		}
-		return toolErrorf("reload 失败(已回滚): %v", err), plan.Target, "error", err
+		return applyOut{}, plan.Target, "error", fmt.Errorf("reload 失败(已回滚): %v", err)
 	}
 
 	// 成功:为该 plan 生成 remove 确认令牌并回写 plan store(apply 是 remove
@@ -204,11 +222,12 @@ func applyResult(ctx context.Context, a *app, in applyIn) (*mcp.CallToolResult, 
 		ReloadOK:    true,
 		RemoveToken: plan.RemoveToken.Token,
 	}
-	res := jsonResult(out)
-	if res.IsError {
-		return res, plan.Target, "error", fmt.Errorf("序列化 apply 结果失败")
+	// applyOut 全为标量字段,序列化事实不可失败;保留探测只为让审计结局在
+	// 理论故障下仍是 error。
+	if _, err := json.Marshal(out); err != nil {
+		return applyOut{}, plan.Target, "error", err
 	}
-	return res, plan.Target, "success", nil
+	return out, plan.Target, "success", nil
 }
 
 // runPostCheck 执行蓝图 post_check 命令序列。
