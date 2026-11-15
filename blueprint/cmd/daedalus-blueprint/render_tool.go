@@ -60,43 +60,59 @@ func registerRenderTool(server *mcp.Server, a *app) {
 	}, handleRender(a))
 }
 
-// handleRender 是 blueprint_render 的审计 choke point:args 只记录入参摘要
-// (name,成功时补 plan_id 与"需确认令牌"事实),渲染内容与参数值——可能
-// 内嵌 secret:// 引用或敏感输入——一律严禁进链。入参 / schema / 白名单 /
-// 模板校验拒绝记 denied,序列化故障记 error,其余 success。
+// handleRender 是 blueprint_render 的 MCP 入口:业务判定与审计都在 renderOnce,
+// 这里只把结局格式化为 MCP 结果形态(UI 子命令复用 renderOnce,不走本函数)。
 func handleRender(a *app) func(context.Context, *mcp.CallToolRequest, renderIn) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in renderIn) (*mcp.CallToolResult, any, error) {
-		res, planID, outcome, cause := renderResult(a, in)
-		args := map[string]any{"name": in.Name}
-		if planID != "" {
-			args["plan_id"] = planID
-			args["confirm_required"] = true
+		out, outcome, cause := renderOnce(a, in)
+		if outcome != "success" {
+			if cause == nil {
+				cause = fmt.Errorf("渲染结果序列化失败")
+			}
+			return toolError(cause), nil, nil
 		}
-		recordAudit("blueprint_render", outcome, args, cause)
-		return res, nil, nil
+		return jsonResult(out), nil, nil
 	}
 }
 
-func renderResult(a *app, in renderIn) (*mcp.CallToolResult, string, string, error) {
+// renderOnce 是 blueprint_render 的业务判定 + 审计 choke point 主体:每次调用
+// 恰落一条链。args 只记录入参摘要(name,成功时补 plan_id 与"需确认令牌"事实),
+// 渲染内容与参数值——可能内嵌 secret:// 引用或敏感输入——一律严禁进链。
+// 入参 / schema / 白名单 / 模板校验拒绝记 denied,序列化故障记 error。
+//
+// UI 子命令与 MCP handler 共用本函数,两条入口的审计口径因此不会漂移。
+func renderOnce(a *app, in renderIn) (renderOut, string, error) {
+	out, outcome, cause := planBlueprint(a, in)
+	args := map[string]any{"name": in.Name}
+	if outcome == "success" {
+		args["plan_id"] = out.PlanID
+		args["confirm_required"] = true
+	}
+	recordAudit("blueprint_render", outcome, args, cause)
+	return out, outcome, cause
+}
+
+// planBlueprint 是 render 的纯业务核心:校验 → 路径 → 模板渲染 → 行级 diff →
+// 生成 plan_id/confirm_token 并存入 plan store。不含审计、不产出 MCP 结果形态。
+func planBlueprint(a *app, in renderIn) (renderOut, string, error) {
 	cb, ok := a.reg.get(in.Name)
 	if !ok {
-		err := fmt.Errorf("blueprint %q 不存在", in.Name)
-		return toolError(err), "", "denied", err
+		return renderOut{}, "denied", fmt.Errorf("blueprint %q 不存在", in.Name)
 	}
 	params, err := normalizeParams(in.Params)
 	if err != nil {
-		return toolErrorf("params 解析失败: %v", err), "", "denied", err
+		return renderOut{}, "denied", fmt.Errorf("params 解析失败: %v", err)
 	}
 
 	// 明文 secret 检测(fail-closed,先于 schema:安全语义错误优先于
 	// 格式细节错误,且明文密码即便侥幸过 schema pattern 也必须在此被拒)。
 	if err := detectPlaintextSecrets(params); err != nil {
-		return toolError(err), "", "denied", err
+		return renderOut{}, "denied", err
 	}
 
 	if cb.schemaResolved != nil {
 		if err := cb.schemaResolved.Validate(params); err != nil {
-			return toolErrorf("params 校验失败: %v", err), "", "denied", err
+			return renderOut{}, "denied", fmt.Errorf("params 校验失败: %v", err)
 		}
 	}
 
@@ -104,16 +120,15 @@ func renderResult(a *app, in renderIn) (*mcp.CallToolResult, string, string, err
 
 	target, err := renderPath(cb.Blueprint.OutputPathTmpl, data)
 	if err != nil {
-		return toolError(err), "", "denied", err
+		return renderOut{}, "denied", err
 	}
 	if !validateOutputPath(a.outputDirs, target) {
-		err := fmt.Errorf("目标路径 %q 越出允许目录白名单 (%s)", target, strings.Join(a.outputDirs, ", "))
-		return toolError(err), "", "denied", err
+		return renderOut{}, "denied", fmt.Errorf("目标路径 %q 越出允许目录白名单 (%s)", target, strings.Join(a.outputDirs, ", "))
 	}
 
 	var buf bytes.Buffer
 	if err := cb.template.Execute(&buf, data); err != nil {
-		return toolErrorf("模板渲染失败: %v", err), "", "denied", err
+		return renderOut{}, "denied", fmt.Errorf("模板渲染失败: %v", err)
 	}
 	rendered := buf.String()
 
@@ -141,11 +156,12 @@ func renderResult(a *app, in renderIn) (*mcp.CallToolResult, string, string, err
 		TargetPath:      target,
 		ConfirmToken:    tok.Token,
 	}
-	res := jsonResult(out)
-	if res.IsError {
-		return res, "", "error", nil
+	// renderOut 全为字符串字段,序列化事实不可失败;保留探测只为让审计结局
+	// 在理论故障下仍是 error 而非 success。
+	if _, err := json.Marshal(out); err != nil {
+		return renderOut{}, "error", err
 	}
-	return res, planID, "success", nil
+	return out, "success", nil
 }
 
 // normalizeParams 把任意 JSON 输入归一化为 map[string]any:params 以 any 接收,

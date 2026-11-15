@@ -1,0 +1,88 @@
+{{define "apply"}}
+<h1 class="view-title">应用{{with .Apply.Display}} · {{.}}{{end}}</h1>
+<p class="view-lead">这一步会<b>修改系统</b>：写入目标配置文件、执行 post_check、reload 服务。失败会自动回滚。</p>
+
+{{if .Apply.Empty}}
+<div class="panel" id="apply-idle">
+  <div class="body" style="color:var(--ink-3)">尚未生成计划。请先在“渲染预览”里预览要写入的内容。</div>
+</div>
+{{else}}
+<div class="layout">
+  <div class="panel">
+    <header>将要执行的变更</header>
+    <div class="body">
+      <dl class="result-grid" style="padding:0">
+        <dt>蓝图</dt><dd>{{.Apply.Blueprint}}</dd>
+        <dt>写入</dt><dd>{{.Apply.TargetPath}}</dd>
+        <dt>校验</dt><dd>{{if .Apply.PostCheck}}{{.Apply.PostCheck}}{{else}}—{{end}}</dd>
+        <dt>服务</dt><dd>reload {{.Apply.Reload}}</dd>
+        <dt>回滚</dt><dd>失败则恢复应用前的内容并再次 reload</dd>
+      </dl>
+
+      <div class="notice warn" id="apply-expired" role="alert"{{if not .Apply.Expired}} hidden{{end}}>
+        <b>确认令牌已过期</b>
+        令牌只有 15 分钟有效，请回到预览重新渲染。
+      </div>
+
+      {{if .Apply.ExpiresAt}}
+      <div class="token" id="token-box" data-expires-at="{{.Apply.ExpiresAt}}">
+        <div class="row">
+          <span><b>确认令牌</b> · 单次有效 · 有效期 15 分钟</span>
+          <span class="ttl" id="token-ttl">剩余 15:00</span>
+        </div>
+        <div style="margin-top:6px"><code>已隐藏，提交时自动带上</code></div>
+        <div class="hint" style="margin-top:4px">过期后需重新“预览”以获取新令牌。</div>
+      </div>
+      {{end}}
+
+      {{if .Apply.CanApply}}
+      <form id="apply-form">
+        <input type="hidden" name="name" value="{{.Apply.Blueprint}}">
+        <input type="hidden" name="plan_id" value="{{.Apply.PlanID}}">
+        <input type="hidden" name="confirm_token" value="{{.Apply.ConfirmToken}}">
+        <div class="actions" style="flex-direction:column; align-items:stretch; margin-top:18px">
+          <label class="check" style="margin-top:0; color:var(--danger)">
+            <input type="checkbox" id="f-confirm-danger">
+            我理解：此操作会修改 {{.Apply.TargetPath}} 并 reload {{.Apply.Reload}}
+          </label>
+          <button type="submit" class="btn btn-danger" id="btn-apply" disabled aria-describedby="apply-hint">应用到系统</button>
+          <span class="hint" id="apply-hint">勾选上方确认后才能提交。</span>
+        </div>
+      </form>
+      {{end}}
+    </div>
+  </div>
+
+  <div>
+    {{with .Apply.Result}}
+    <div class="notice ok" id="apply-ok" role="status">
+      <b>已应用</b>
+      <dl class="result-grid" style="padding:8px 0 0">
+        <dt>tx_id</dt><dd>{{.TxID}}</dd>
+        <dt>config_path</dt><dd>{{.ConfigPath}}</dd>
+        <dt>post_check_ok</dt><dd>{{if .PostCheckOK}}<span class="yes">true</span>{{else}}<span class="no">false</span>{{end}}</dd>
+        <dt>reload_ok</dt><dd>{{if .ReloadOK}}<span class="yes">true</span>{{else}}<span class="no">false</span>{{end}}</dd>
+        <dt>applied_at</dt><dd>{{.AppliedAt}}</dd>
+      </dl>
+      {{if .HasRemove}}<p class="hint" style="margin:8px 0 0">撤销令牌已签发（remove_token），可用于撤销本次变更。</p>{{end}}
+    </div>
+    {{end}}
+
+    {{if .Apply.ErrorMsg}}
+    <div class="notice err" id="apply-err" role="alert">
+      <b>应用失败{{if .Apply.RolledBack}}，已自动回滚{{end}}</b>
+      <span>{{.Apply.ErrorMsg}}</span>
+      {{if .Apply.RolledBack}}<p class="hint" style="color:var(--danger);margin:6px 0 0">配置文件已恢复为应用前的内容。</p>{{end}}
+      <p class="hint" style="margin:6px 0 0">如需重试，请回到“渲染预览”重新渲染以获取新令牌。</p>
+    </div>
+    {{end}}
+
+    {{if not .Apply.Result}}{{if not .Apply.ErrorMsg}}
+    <div class="panel" id="apply-idle">
+      <div class="body" style="color:var(--ink-3)">尚未应用。</div>
+    </div>
+    {{end}}{{end}}
+  </div>
+</div>
+{{end}}
+{{end}}
