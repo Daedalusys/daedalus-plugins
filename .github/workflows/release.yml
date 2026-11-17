@@ -34,6 +34,8 @@ permissions:
 # cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
 env:
   CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot"
+  # 13 个 cap 共同 require 的 SDK 版本(唯一事实源);checkout 与校验都读它。
+  SDK_VERSION: "0.1.3"
 
 jobs:
   release:
@@ -47,14 +49,33 @@ jobs:
           # 取凭据(见下方 Create or update GitHub release 步),不读 .git/config
           # 的 http.extraheader。本文件其余 checkout 同此。
           persist-credentials: false
-      - name: Checkout daedalus-sdk (sibling)
+      - name: Checkout daedalus-sdk (sibling, pinned tag)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: Daedalusys/daedalus-sdk
           path: daedalus-sdk
+          ref: v${{ env.SDK_VERSION }}
+
+      - name: SDK 版本一致性门禁
+        # 发布前必过:13 个 cap 的 go.mod 与 checkout 的 tag 必须是同一个版本。
+        # 否则「本 release 的 zip 是 v<SDK_VERSION> 构建的」这句话无法回查。
+        shell: bash
+        run: |
+          bad=0
+          for d in $CAPS; do
+            got="$(sed -n 's/.*Daedalusys\/daedalus-sdk v\([0-9.]*\).*/\1/p' "$d/go.mod" | head -n1)"
+            if [ "$got" != "$SDK_VERSION" ]; then
+              echo "FAIL: $d/go.mod require SDK '$got',期望 '$SDK_VERSION'" >&2
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] && echo "OK: $CAPS 全部 require SDK v$SDK_VERSION"
 
       - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
+        # 已知未钉的第三条边:打包器(daedalus-plugin-pack)取自 core 默认分支。
+        # 它决定 zip 内的 manifest 规范化与 checksums,严格可复现需要钉到具体 commit;
+        # 那需要在 core 发生打包器变更时同步本仓,故单独裁决,不在本 PR 内改。
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

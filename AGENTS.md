@@ -107,9 +107,9 @@ daedalus-plugins/
 发布出口分两段:本仓 GitHub release 供料,主仓镜像构建消费。release zip 是主仓 CI 构建镜像的唯一插件来源。
 
 1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./cmd/... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
-2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进,本仓经 `replace` 自动跟随本地 checkout;跨仓契约由各仓漂移测试钉住;
+2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进。13 个 cap 的 `go.mod` 必须 require **同一个** SDK 版本,该版本同时写在 `test.yml` / `release.yml` 的 `env.SDK_VERSION`,并作为 checkout 的 tag(`ref: v${{ env.SDK_VERSION }}`);两处不一致会被「SDK 版本一致性门禁」当场拒。抬 SDK 版本 = 一次本仓发版;
 3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 13 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
-4. **主仓取料**: 主仓 CI build job `gh release download --pattern '*.plugin.zip'` 取 **latest**,再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集);
+4. **主仓取料**: 主仓 CI build job 按**钉死的 tag**取料(`scripts/fetch-plugins.sh:PLUGINS_VERSION` ↔ `build.yml` 的 `--tag`),再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集)。**取料不再取 latest** —— 主仓升插件版本是一次显式的 pin 变更,不是"自动跟最新";
 
    **门禁**: `test.yml` 的 `release-sync` job 会在 main 领先 latest release 时变红。
    判据是 git 祖先关系 `main ⊆ release.targetCommitish`,不是时间戳。所以改动插件源码
