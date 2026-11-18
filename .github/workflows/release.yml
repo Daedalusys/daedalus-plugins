@@ -9,7 +9,9 @@
 #     逃出 GITHUB_WORKSPACE);各 sub-module go.mod 的 `replace => ../daedalus-sdk`
 #     相对链解析到该目录,同 test.yml;
 #   - daedalus-plugin-pack 打包器在 daedalus-core 仓,plugins 仓没有——checkout
-#     daedalus-core 到 workspace 子目录构建该二进制。
+#     daedalus-core 到 workspace 子目录构建该二进制。它决定 zip 内的 manifest
+#     规范化与逐条目 checksums,故**钉具体 commit**(env.PACKER_CORE_SHA),
+#     不跟默认分支:浮动它会让同一 tag 的 zip 字节不可复现。
 name: Plugins Release
 on:
   push:
@@ -36,6 +38,15 @@ env:
   CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot"
   # 13 个 cap 共同 require 的 SDK 版本(唯一事实源);checkout 与校验都读它。
   SDK_VERSION: "0.1.3"
+  # 打包器钉 core 的**具体 commit**(不钉分支/不钉 tag):它决定 zip 内的 manifest
+  # 规范化与逐条目 checksums,浮动它会让同一 tag 的 zip 字节不可复现。
+  # 抬它 = 改这一行 + 重新发版(刻意的一次跨仓变更)。
+  # 该 SHA 必须含 cmd/daedalus-plugin-pack —— 下方 checkout 带 ref,查不到即当场失败。
+  PACKER_CORE_SHA: "2f97dececc66d815d1c9721a49c3ee10c8bc02d5"
+  # Go 工具链钉精确版本(= 各 sub-module go.mod 的 `go 1.26.0` 指令):
+  # 浮动 patch 会让同一 tag 重建出的二进制(进 zip)字节不同。setup-go 设
+  # GOTOOLCHAIN=local,故任何模块的 go 指令高于它都会当场失败(见版本门禁)。
+  GO_VERSION: "1.26.0"
 
 jobs:
   release:
@@ -72,25 +83,60 @@ jobs:
           done
           [ "$bad" -eq 0 ] && echo "OK: $CAPS 全部 require SDK v$SDK_VERSION"
 
-      - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack)
-        # 已知未钉的第三条边:打包器(daedalus-plugin-pack)取自 core 默认分支。
-        # 它决定 zip 内的 manifest 规范化与 checksums,严格可复现需要钉到具体 commit;
-        # 那需要在 core 发生打包器变更时同步本仓,故单独裁决,不在本 PR 内改。
+      - name: Checkout daedalus-core (sibling, for daedalus-plugin-pack, pinned commit)
+        # 打包器这条边钉在具体 commit(见 env.PACKER_CORE_SHA):它决定 zip 内的
+        # manifest 规范化与 checksums,跟默认分支会让同一 tag 的 zip 字节漂移。
+        # ref 指向不存在的 SHA 时 checkout 当场失败 —— 这就是 pin 的自校验,
+        # 且它发生在任何发布步骤之前,不会先产出半份资产。
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: Daedalusys/daedalus-core
           path: daedalus-core
+          ref: ${{ env.PACKER_CORE_SHA }}
 
       - name: Set Up Go Toolchain
         # 各 sub-module 与 core 的 go.mod pins `go 1.26.0`;runner image 可能更老,显式 pin。
         # setup-go 会设 GOTOOLCHAIN=local,所以这里的版本必须 >= 被构建模块的 go 指令。
+        # 钉精确版本而非 1.26.x:浮动 patch 会让同一 tag 重建出的二进制(进 zip)字节不同。
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.x'
+          go-version: '${{ env.GO_VERSION }}'
           # 本 workflow 只由 tag push / workflow_dispatch 触发,不接受 PR ——
           # 缓存条目不会被 PR 分支写入,故保留 cache(发布腿提速)。
           cache: true
+
+      - name: Go 工具链版本门禁
+        # GOTOOLCHAIN=local 下工具链不会自动升级:某个模块的 go 指令高于钉死的
+        # 版本时,要么编译炸、要么静默用别的工具链 —— 两种都让「这个 zip 是用哪版
+        # Go 构建的」无法回查。这里显式判:各模块 go 指令 ≤ GO_VERSION,且实际
+        # go 版本 == GO_VERSION(装错版本当场红,而不是等字节漂移)。
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          for d in $CAPS daedalus-core; do
+            want="$(awk '/^go [0-9]/{print $2; exit}' "$d/go.mod")"
+            if [ -z "$want" ]; then
+              echo "FAIL: $d/go.mod 没有 go 指令" >&2
+              bad=1
+              continue
+            fi
+            lo="$(printf '%s\n%s\n' "$want" "$GO_VERSION" | sort -V | sed -n '1p')"
+            if [ "$lo" != "$want" ]; then
+              echo "FAIL: $d/go.mod 要求 go $want,高于钉死的工具链 $GO_VERSION" >&2
+              bad=1
+            fi
+          done
+          got="$(go version | sed -n 's/^go version go\([0-9.]*\).*/\1/p')"
+          if [ "$got" != "$GO_VERSION" ]; then
+            echo "FAIL: 实际工具链 go${got:-<无>} != 钉死的 $GO_VERSION" >&2
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: 工具链 go$GO_VERSION,各模块 go 指令均不高于它"
 
       - name: Build daedalus-plugin-pack (from daedalus-core)
         # 只构建打包器一个二进制(不构建 core 其余 cmd);-h 冒烟确认可执行。
@@ -98,9 +144,11 @@ jobs:
         # 在 daedalus-core/ 而非 ../daedalus-core 平级目录,须用子目录相对路径;
         # core 自身 go.mod 的 `replace => ../daedalus-sdk` 从该子目录出发解析到
         # 上方 SDK 检出。
+        # -trimpath -buildvcs=false 与插件构建用同一套 flags:检出目录路径与
+        # vcs.revision/vcs.modified 都不能进二进制,否则同一输入两次构建字节不同。
         shell: bash
         run: |
-          (cd daedalus-core && go build -trimpath -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
+          (cd daedalus-core && go build -trimpath -buildvcs=false -o bin/daedalus-plugin-pack ./cmd/daedalus-plugin-pack)
           daedalus-core/bin/daedalus-plugin-pack -h >/dev/null && echo "pack binary OK"
 
       - name: Materialize blueprint embed data (//go:embed 源)
@@ -120,12 +168,15 @@ jobs:
         # bin/daedalus-<cap>。直接 -in "$cap" 会把 cmd/*.go + go.mod + go.sum +
         # testdata 全打进 zip,解包进镜像树安装态后泄漏源码进 /opt,违反零残留
         # 断言。blueprint 的 blueprints/ 已 //go:embed 进二进制,同样不入 zip。
+        # -trimpath -buildvcs=false 与打包器构建同套 flags:workflow 会 rsync
+        # blueprint 嵌入数据 → 工作树天然脏 → vcs.modified 会随环境变;路径也
+        # 会带上检出目录 —— 两者都必须挡在二进制之外,zip 字节才可复现。
         shell: bash
         run: |
           mkdir -p /tmp/release-zips
           for cap in $CAPS; do
             echo "== $cap =="
-            (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
+            (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o bin/ ./cmd/...)
             stage="/tmp/release-zips-stage/$cap"
             rm -rf "$stage"
             mkdir -p "$stage/bin"
