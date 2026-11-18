@@ -4,3 +4,10 @@ use (
 	.
 	../../daedalus-sdk
 )
+
+// 模块级 replace（各 cap go.mod 里的 `=> ../daedalus-sdk`）是插件仓 CI 形状：
+// CI 把 SDK 检出到 daedalus-plugins/daedalus-sdk。本地平级布局下该路径不存在，
+// 且会盖过上面 use 里的 SDK（"conflicting replacements"）。workspace 级 replace
+// 覆盖模块级 —— 与 daedalus-core/go.work.example 同款；SDK 升版时下面的版本号
+// 要跟着各 cap go.mod 的 require 走。
+replace github.com/Daedalusys/daedalus-sdk v0.1.3 => ../../daedalus-sdk
