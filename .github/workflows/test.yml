@@ -37,6 +37,9 @@ env:
   # 并按它校验各 go.mod —— 此前 SDK 检出不带 ref,吃的是默认分支:
   # 同一个 commit 隔天重跑会拿到不同的 SDK,「v0.x.y 的 zip 可复现」不成立。
   SDK_VERSION: "0.1.3"
+  # Go 工具链钉精确版本,与 release.yml 的 env.GO_VERSION 同值:
+  # 浮动 patch 会让同一份源码在两条 workflow 里构建出不同字节的二进制。
+  GO_VERSION: "1.26.0"
 
 jobs:
   test:
@@ -91,9 +94,10 @@ jobs:
       - name: Set Up Go Toolchain
         # 各 sub-module 与 core 的 go.mod pins `go 1.26.0`;runner image 可能更老,显式 pin。
         # setup-go 会设 GOTOOLCHAIN=local,所以这里的版本必须 >= 被构建模块的 go 指令。
+        # 精确版本(非 1.26.x)与 release.yml 同值:构建输入一致,产物才可比对。
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.x'
+          go-version: '${{ env.GO_VERSION }}'
           # 本 job 由 pull_request 触发 → 显式关掉 module cache:cache 按分支
           # 作用域共享,基础分支能读到 PR 分支写入的条目,那是 cache 投毒的读侧。
           cache: false
@@ -110,11 +114,13 @@ jobs:
       - name: Build & Test sub-modules
         # 每个 sub-module 独立 go build + go test(monorepo 无共享 go.mod,
         # 必须逐模块跑)。go build 产物落 <cap>/bin/。
+        # -trimpath -buildvcs=false 与 release.yml 同套 flags:路径与 vcs 元数据
+        # 不进二进制,同一份源码在两条腿上构建出的字节才一致。
         shell: bash
         run: |
           for cap in $CAPS; do
             echo "== $cap =="
-            (cd "$cap" && mkdir -p bin && go build -trimpath -o bin/ ./cmd/...)
+            (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o bin/ ./cmd/...)
             (cd "$cap" && go test ./...)
           done
 

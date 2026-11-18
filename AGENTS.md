@@ -109,6 +109,17 @@ daedalus-plugins/
 1. **改插件源码**(本仓 `<cap>/cmd/` 或 manifest) → 逐 cap 独立模块自检 `cd <cap> && go build ./cmd/... && go test ./...`(仓根无 go.mod,根目录 `go build ./...` 在 workspace 形态下不可用);
 2. **SDK 变更联动**: 插件依赖的 SDK 包改动在 `../daedalus-sdk/` 独立演进。13 个 cap 的 `go.mod` 必须 require **同一个** SDK 版本,该版本同时写在 `test.yml` / `release.yml` 的 `env.SDK_VERSION`,并作为 checkout 的 tag(`ref: v${{ env.SDK_VERSION }}`);两处不一致会被「SDK 版本一致性门禁」当场拒。抬 SDK 版本 = 一次本仓发版;
 3. **发 release**: push `v*` tag,或 `gh workflow run release.yml -f tag=vX.Y.Z` → `release.yml` 逐 cap `go build` 并用 `daedalus-plugin-pack` 打 13 个 `daedalus.<cap>.plugin.zip`(注入逐条目 sha256 + manifest 规范化自摘要),再 `gh release create/upload` 发布;
+
+   **第三条边(打包器 + 工具链)**: zip 里装的是 Go 二进制,「同一 tag 重新构建出同字节」
+   要求打包器与工具链都不浮动。打包器取自 core 仓 `cmd/daedalus-plugin-pack`,钉 **commit**
+   (`env.PACKER_CORE_SHA`,40 位 SHA,不钉分支也不钉 tag);Go 工具链钉**精确版本**
+   (`env.GO_VERSION = 1.26.0`,与各 sub-module `go.mod` 的 `go` 指令一致),`go build` 一律带
+   `-trimpath -buildvcs=false` —— 检出目录路径与 `vcs.revision` / `vcs.modified` 都不得进二进制。
+   三者齐了,同 tag 重建出的 zip 字节一致;release 资产含 `SHA256SUMS.txt`,notes 记下打包器 SHA
+   与 Go 版本,所以「字节变了」可被发现。抬打包器 = 改 `PACKER_CORE_SHA` + 重新发版
+   (一次显式的跨仓变更)。这条边只住本仓 `release.yml`;主仓 `files/scripts/cross-repo-pins.env`
+   只钉 SDK 与 plugins 两条边,不重复钉。
+
 4. **主仓取料**: 主仓 CI build job 按**钉死的 tag**取料(`scripts/fetch-plugins.sh:PLUGINS_VERSION` ↔ `build.yml` 的 `--tag`),再通配解包全部 zip 到 `files/system/opt/daedalus/plugins/<id>`(解压即 `-verify --keep`,checksum 不符 fail-closed)。本机离线腿是主仓 `just plugin-pack`(构建 Go 二进制 → 同步 `<cap>/bin/` → 打 zip → 解压安装态)与 `just fetch-plugins --local-zip-dir`;注意 `scripts/fetch-plugins.sh` 的解包腿已与 CI 通配腿同源(同样通配 release 里的全部 `*.plugin.zip`,名单的唯一事实源是 release 资产集)。**取料不再取 latest** —— 主仓升插件版本是一次显式的 pin 变更,不是"自动跟最新";
 
    **门禁**: `test.yml` 的 `release-sync` job 会在 main 领先 latest release 时变红。
