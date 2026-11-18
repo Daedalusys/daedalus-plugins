@@ -155,9 +155,9 @@ for cap in fs shell pkg sysinfo service blueprint dupe diskclean organize trace 
     (cd "$cap" && go build ./... && go test ./...)
 done
 
-# 单仓 clone (无兄弟仓): 启用 go.work
-cp go.work.example go.work
-cd fs && cp go.work.example go.work   # 各插件仓独立可工作
+# 单仓 clone(只有插件仓 + 平级的 SDK 仓):逐 cap 启用 go.work
+# 仓根没有 go.work.example;cap 的 example 用 `use ../../daedalus-sdk`,故 SDK 必须与本仓平级
+cd fs && cp go.work.example go.work   # 各 cap 独立可工作,用完 rm go.work
 
 # 三仓平级 clone (推荐): 由 ../daedalus-core/go.work 桥接,无需本仓 go.work
 # 仓名必须为 daedalus-core / daedalus-sdk / daedalus-plugins (与 go.work 路径对应)

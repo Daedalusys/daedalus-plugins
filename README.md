@@ -97,8 +97,8 @@ fs/
 4. **构建期自校验**:`76-daedalus-plugin-gen.sh` 从 manifest + policy.toml 渲染
    systemd ExecStart,交叉核对 `tools` 与二进制 stdio `tools/list`、`resources[].kind`
    ⊆ `[objectmodel].enabled_kinds`,漂移即拒构建;
-5. **镜像出口**:主仓 `just build`(sync + podman build)→ 镜像内 7 插件
-   (copilot + 6 能力)全 ok 断言在 v3 构建机补跑。
+5. **镜像出口**:主仓 `just build`(sync + podman build)→ 镜像内 14 插件
+   (copilot + 13 能力)全 ok 断言在 v3 构建机补跑。
 
 **版本策略**:插件 manifest `version` 与 SDK 包版本各自演进;插件仓不产
 独立 release artifact,镜像即发布物。
