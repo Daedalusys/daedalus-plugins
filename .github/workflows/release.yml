@@ -185,6 +185,10 @@ jobs:
             chmod 0755 "$stage/bin/daedalus-$cap"
             daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
           done
+          # sha256 清单与 zip 同批生成、同批上传:生成点与上传点必须是同一份文件,
+          # 各算一次就会出现「清单与资产对不上」,门禁形同虚设。
+          (cd /tmp/release-zips && sha256sum *.plugin.zip > SHA256SUMS.txt)
+          cat /tmp/release-zips/SHA256SUMS.txt
           ls -la /tmp/release-zips/
 
       - name: 构建链确定性自检(同一输入两次构建 + 两次打包 → 字节必须一致)
@@ -227,6 +231,9 @@ jobs:
           # dispatch 的 tag input 是调用方可控值,内插等于给它执行任意命令的机会。
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
+          # 构建输入回查信息:同样经 env 传入,不进 run 脚本体。
+          PACKER_SHA: ${{ env.PACKER_CORE_SHA }}
+          GO_VER: ${{ env.GO_VERSION }}
         shell: bash
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -239,14 +246,26 @@ jobs:
             echo "ERROR: tag 非法(应为 vX.Y.Z),got: [$TAG]" >&2
             exit 1
           fi
+          # 资产集合与清单必须一一对应(清单漏写一个 zip = 门禁形同虚设)。
+          # 判在上传之前:清单不完整就别发布,而不是发出去再报错。
+          want="$(ls /tmp/release-zips/*.plugin.zip | wc -l)"
+          got="$(wc -l < /tmp/release-zips/SHA256SUMS.txt)"
+          [ "$want" -eq "$got" ] || { echo "FAIL: SHA256SUMS 条目数 $got != zip 数 $want" >&2; exit 1; }
+          for f in /tmp/release-zips/*.plugin.zip; do
+            grep -qF "$(basename "$f")" /tmp/release-zips/SHA256SUMS.txt || { echo "FAIL: 清单缺 $(basename "$f")" >&2; exit 1; }
+          done
+          echo "OK: SHA256SUMS 覆盖全部 $want 个 zip"
           # 说明文本由 env.CAPS 派生:新增 cap 只改一处,不硬编码数量与名单。
           NOTES="$(printf "%s 个能力插件 zip(%s)。daedalus-core 镜像构建经 scripts/fetch-plugins.sh 解包本 release 的全部 *.plugin.zip 进 /opt/daedalus/plugins —— 解包哪些由本 release 的资产集决定;镜像侧允许集合另由 daedalus-core 的 files/scripts/76-daedalus-plugin-gen.sh 里的 CAPS 把关。\n" "$(echo "$CAPS" | wc -w)" "$CAPS")"
+          # 回查段:打包器的 commit 与 Go 版本必须落在 notes,否则「这个 zip 是谁
+          # 打的、字节为什么可能变」无从查起(SDK 那条边已按同样方式记录)。
+          NOTES="$NOTES$(printf '构建可核对信息:packer_core_sha=%s go=%s;各 zip 的 sha256 见同 release 的 SHA256SUMS.txt。\n' "$PACKER_SHA" "$GO_VER")"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" /tmp/release-zips/*.plugin.zip /tmp/release-zips/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
           else
             # --target "$GITHUB_SHA":dispatch 创建的 release/tag 默认落**默认分支**
             # HEAD;显式指向本次 run 的实际 commit,保证 tag 落点与构建产物源码一致。
-            gh release create "$TAG" /tmp/release-zips/*.plugin.zip --repo "$GITHUB_REPOSITORY" \
+            gh release create "$TAG" /tmp/release-zips/*.plugin.zip /tmp/release-zips/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "daedalus-plugins $TAG"
           fi
