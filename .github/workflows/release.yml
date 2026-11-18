@@ -187,6 +187,37 @@ jobs:
           done
           ls -la /tmp/release-zips/
 
+      - name: 构建链确定性自检(同一输入两次构建 + 两次打包 → 字节必须一致)
+        # 在这一次 run 内证明「构建链没有不确定输入」:同一份源码两次构建出的
+        # 二进制必须同字节,打包器对同一输入两次必须产出同字节,重建后再打也
+        # 必须同字节。任一环节漂移 → 当场红,而不是等下游发现 zip 变了。
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage=/tmp/repro-stage
+          rm -rf "$stage" /tmp/repro-zips
+          mkdir -p "$stage/bin" /tmp/repro-zips
+          # (1) 同一份已构建输入打两次包 → 打包器必须确定性
+          cp -f fs/daedalus.plugin.json "$stage/daedalus.plugin.json"
+          cp -f fs/bin/daedalus-fs "$stage/bin/daedalus-fs"
+          chmod 0755 "$stage/bin/daedalus-fs"
+          for i in 1 2; do
+            daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out "/tmp/repro-zips/pack.$i.zip"
+          done
+          # (2) 从源码重新构建一次 fs → 二进制字节必须一致 → 整条链确定性
+          (cd fs && go build -trimpath -buildvcs=false -o /tmp/repro-fs-rebuild ./cmd/...)
+          cmp -s fs/bin/daedalus-fs /tmp/repro-fs-rebuild || { echo "FAIL: 同一源码两次构建的二进制字节不同" >&2; exit 1; }
+          rm -rf "$stage/bin" && mkdir -p "$stage/bin"
+          cp -f /tmp/repro-fs-rebuild "$stage/bin/daedalus-fs"
+          chmod 0755 "$stage/bin/daedalus-fs"
+          daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out /tmp/repro-zips/pack.3.zip
+          a="$(sha256sum /tmp/repro-zips/pack.1.zip | cut -d' ' -f1)"
+          b="$(sha256sum /tmp/repro-zips/pack.2.zip | cut -d' ' -f1)"
+          c="$(sha256sum /tmp/repro-zips/pack.3.zip | cut -d' ' -f1)"
+          [ "$a" = "$b" ] || { echo "FAIL: 打包器对同一输入产出不同字节($a != $b)" >&2; exit 1; }
+          [ "$a" = "$c" ] || { echo "FAIL: 重新构建后 zip 字节不同($a != $c)—— 构建链有不确定输入" >&2; exit 1; }
+          echo "OK: 构建链确定性自检通过 sha256=$a"
+
       - name: Create or update GitHub release
         # release 已存在时(重跑)只上传资产(--clobber 覆盖),不存在时创建。
         # tag 来源:push v* → 自动取 tag;workflow_dispatch → 必须填 tag input。
