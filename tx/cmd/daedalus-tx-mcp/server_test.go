@@ -122,7 +122,6 @@ func TestPlaceholderToolsReturnStructuredError(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"tx_apply", map[string]any{"kind": "service", "name": "demo.service", "desired_state": "started"}},
 		{"tx_status", map[string]any{"tx_id": "0123456789abcdef"}},
 		{"tx_list", map[string]any{}},
 		{"tx_pending", map[string]any{}},

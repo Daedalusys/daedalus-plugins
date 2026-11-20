@@ -31,6 +31,8 @@ func loadRuntime(stderr io.Writer) (*autonomy.Config, error) {
 		fmt.Fprintf(stderr, "%s: 策略不可用,危险名单未合并(仅用档位表 deny_names): %v\n", serverName, perr)
 		return cfg, nil
 	}
+	// 审计与判定同读一份策略:同一身份分裂写进多条链会让 verify 必判断链。
+	policyAuditLogPath = p.Audit.LogPath
 	// [fleet].high_risk_services 与档位表 deny_names 同一语义(裸名前缀),
 	// 合流后由 Classify 的第一道闸门统一处理。
 	cfg.DenyNames = append(cfg.DenyNames, p.Fleet.HighRiskServices...)

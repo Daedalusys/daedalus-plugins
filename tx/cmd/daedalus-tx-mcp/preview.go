@@ -79,7 +79,7 @@ type observation struct {
 	known   bool
 }
 
-// preparePreview 校验入参并归一化单元名。kind 与动词集都是封闭的:表外一律拒绝。
+// preparePreview 校验入参并原样回显单元名。kind 与动词集都是封闭的:表外一律拒绝。
 func preparePreview(in previewIn) (unit string, serr *structuredError) {
 	if in.Kind != kindService {
 		return "", &structuredError{
@@ -154,20 +154,19 @@ func systemctlArgv(domain, verb, unit string) []string {
 	return []string{"systemctl", verb, unit}
 }
 
-// normalizeUnitName 名称门 + 只补 .service 后缀。带其它单元后缀(如 .timer)的名字
-// 直接拒绝:盲拼 .service 会把 foo.timer 变成 foo.timer.service,等于偷偷把用户
-// 意图换成另一个单元。
+// normalizeUnitName 是单元名门:只接受 .service 结尾的名字,原样回显。
+//
+// 不做任何隐式改写:把 foo.timer 补成 foo.timer.service 会造成"观测 A、实际改 B";
+// 裸名补 .service 同样是一次改写,而观测命令(service-observe)只认 .service 字面量。
+// 三者(观测、propose、systemctl)必须吃同一个字符串,所以补后缀这件事交给调用方。
 func normalizeUnitName(name string) (string, error) {
 	if name == "" || !unitNamePattern.MatchString(name) {
 		return "", fmt.Errorf("单元名非法: %q(仅允许字母数字与 _ . @ -)", name)
 	}
-	if strings.HasSuffix(name, ".service") {
-		return name, nil
+	if !strings.HasSuffix(name, ".service") {
+		return "", fmt.Errorf("v1 只接受 .service 单元名: %q(不做隐式补后缀)", name)
 	}
-	if strings.Contains(name, ".") {
-		return "", fmt.Errorf("v1 只接受 .service 单元: %q", name)
-	}
-	return name + ".service", nil
+	return name, nil
 }
 
 // observeUnit 调 daedalus-tx service-observe(只读,零副作用)。进程起不来、非零

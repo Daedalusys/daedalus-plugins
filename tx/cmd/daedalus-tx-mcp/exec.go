@@ -7,9 +7,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -44,4 +47,77 @@ func runTx(args ...string) (stdout, stderr string, rc int, err error) {
 		return outBuf.String(), errBuf.String(), exitErr.ExitCode(), nil
 	}
 	return outBuf.String(), errBuf.String(), -1, runErr
+}
+
+// txIDPattern 与 core CLI 的形状门逐字一致:16 位小写十六进制。CLI 的 stdout 也按
+// 此校验 —— 一个不合格的 tx-id 拼进下一步 argv 就是在猜事务。
+var txIDPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
+
+// serviceSetStep 是 service.set 的步骤 args:两键锁定 schema。用结构体而非 map,
+// 键序稳定(propose 的 argv 逐字可复现),且不会顺手多写一个键被适配器拒绝。
+type serviceSetStep struct {
+	Name         string `json:"name"`
+	DesiredState string `json:"desired_state"`
+}
+
+// runServiceSetTransaction 走完 core CLI 的三步事务:begin → propose → apply。
+// 返回 tx-id 供审计串接。任何一步失败都返回错误:部分成功的事务不能当成功报告,
+// 调用方读 tx-status 去查实际状态。
+func runServiceSetTransaction(unit, desiredState string) (string, error) {
+	stdout, stderrText, rc, err := runTx("begin")
+	if err != nil {
+		return "", fmt.Errorf("daedalus-tx begin 进程故障: %w", err)
+	}
+	if rc != 0 {
+		return "", cliFailure("begin", rc, stdout, stderrText)
+	}
+	var begin struct {
+		TxID string `json:"tx_id"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &begin); err != nil {
+		return "", fmt.Errorf("daedalus-tx begin 的输出不是 JSON: %w", err)
+	}
+	if !txIDPattern.MatchString(begin.TxID) {
+		return "", fmt.Errorf("daedalus-tx begin 返回的 tx_id 非法: %q", begin.TxID)
+	}
+
+	stepJSON, err := json.Marshal(serviceSetStep{Name: unit, DesiredState: desiredState})
+	if err != nil {
+		return "", fmt.Errorf("序列化 service.set 参数失败: %w", err)
+	}
+	stdout, stderrText, rc, err = runTx("propose", begin.TxID, adapterServiceSet, string(stepJSON))
+	if err != nil {
+		return "", fmt.Errorf("daedalus-tx propose 进程故障: %w", err)
+	}
+	if rc != 0 {
+		return "", cliFailure("propose", rc, stdout, stderrText)
+	}
+
+	stdout, stderrText, rc, err = runTx("apply", begin.TxID)
+	if err != nil {
+		return "", fmt.Errorf("daedalus-tx apply 进程故障: %w", err)
+	}
+	if rc != 0 {
+		return "", cliFailure("apply", rc, stdout, stderrText)
+	}
+	return begin.TxID, nil
+}
+
+// cliFailure 把 CLI 的 {"error":...} 转成 Go 错误。只取 error 字段,不回灌整份
+// stdout/stderr:事务日志全文可能很长,而且会顺着工具错误进入客户端日志。
+func cliFailure(sub string, rc int, stdout, stderrText string) error {
+	var doc struct {
+		Error string `json:"error"`
+	}
+	msg := ""
+	if err := json.Unmarshal([]byte(stdout), &doc); err == nil {
+		msg = doc.Error
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(stderrText)
+	}
+	if msg == "" {
+		return fmt.Errorf("daedalus-tx %s 失败(rc=%d)", sub, rc)
+	}
+	return fmt.Errorf("daedalus-tx %s 失败(rc=%d): %s", sub, rc, truncateRunes(msg, 240))
 }

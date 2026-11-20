@@ -158,7 +158,7 @@ func TestPreparePreviewValidation(t *testing.T) {
 		{"path separator", previewIn{Kind: "service", Name: "a/b.service", DesiredState: "started"}, "invalid_name", ""},
 		{"leading dash", previewIn{Kind: "service", Name: "-x.service", DesiredState: "started"}, "invalid_name", ""},
 		{"other unit suffix", previewIn{Kind: "service", Name: "backup.timer", DesiredState: "started"}, "invalid_name", ""},
-		{"bare name gets suffix", previewIn{Kind: "service", Name: "nginx", DesiredState: "started"}, "", "nginx.service"},
+		{"bare name rejected (no implicit suffix)", previewIn{Kind: "service", Name: "nginx", DesiredState: "started"}, "invalid_name", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
