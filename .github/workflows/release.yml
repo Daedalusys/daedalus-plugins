@@ -35,9 +35,9 @@ permissions:
 
 # cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
 env:
-  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot"
-  # 13 个 cap 共同 require 的 SDK 版本(唯一事实源);checkout 与校验都读它。
-  SDK_VERSION: "0.1.3"
+  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot tx"
+  # 14 个 cap 共同 require 的 SDK 版本(唯一事实源);checkout 与校验都读它。
+  SDK_VERSION: "0.2.0"
   # 打包器钉 core 的**具体 commit**(不钉分支/不钉 tag):它决定 zip 内的 manifest
   # 规范化与逐条目 checksums,浮动它会让同一 tag 的 zip 字节不可复现。
   # 抬它 = 改这一行 + 重新发版(刻意的一次跨仓变更)。
@@ -69,7 +69,7 @@ jobs:
           ref: v${{ env.SDK_VERSION }}
 
       - name: SDK 版本一致性门禁
-        # 发布前必过:13 个 cap 的 go.mod 与 checkout 的 tag 必须是同一个版本。
+        # 发布前必过:14 个 cap 的 go.mod 与 checkout 的 tag 必须是同一个版本。
         # 否则「本 release 的 zip 是 v<SDK_VERSION> 构建的」这句话无法回查。
         shell: bash
         run: |
@@ -165,7 +165,7 @@ jobs:
         # 目录(不在插件源目录内——若 -out 落在 -in 目录里,重跑时旧 zip 会被
         # 打进新 zip,zip-in-zip 递归膨胀)。
         # 打包源走"暂存目录"而非插件源目录:暂存只放 daedalus.plugin.json +
-        # bin/daedalus-<cap>。直接 -in "$cap" 会把 cmd/*.go + go.mod + go.sum +
+        # bin/<exe>(文件名取自 manifest 的 executable)。直接 -in "$cap" 会把 cmd/*.go + go.mod + go.sum +
         # testdata 全打进 zip,解包进镜像树安装态后泄漏源码进 /opt,违反零残留
         # 断言。blueprint 的 blueprints/ 已 //go:embed 进二进制,同样不入 zip。
         # -trimpath -buildvcs=false 与打包器构建同套 flags:workflow 会 rsync
@@ -176,13 +176,20 @@ jobs:
           mkdir -p /tmp/release-zips
           for cap in $CAPS; do
             echo "== $cap =="
-            (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o bin/ ./cmd/...)
+            # 产物名取 manifest 的 executable 字段,不按 cap 名硬拼:daedalus.tx 的
+            # 二进制刻意叫 daedalus-tx-mcp(与 core 的 daedalus-tx CLI 同名会互相覆盖)。
+            exe="$(sed -n 's/.*"executable"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cap/daedalus.plugin.json" | head -n 1)"
+            case "$exe" in
+              bin/*) ;;
+              *) echo "FAIL: $cap 的 executable 缺失或不以 bin/ 开头: ${exe:-<空>}" >&2; exit 1 ;;
+            esac
+            (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o "$exe" ./cmd/...)
             stage="/tmp/release-zips-stage/$cap"
             rm -rf "$stage"
-            mkdir -p "$stage/bin"
+            mkdir -p "$stage/$(dirname "$exe")"
             cp -f "$cap/daedalus.plugin.json" "$stage/daedalus.plugin.json"
-            cp -f "$cap/bin/daedalus-$cap" "$stage/bin/daedalus-$cap"
-            chmod 0755 "$stage/bin/daedalus-$cap"
+            cp -f "$cap/$exe" "$stage/$exe"
+            chmod 0755 "$stage/$exe"
             daedalus-core/bin/daedalus-plugin-pack -in "$stage" -out "/tmp/release-zips/daedalus.$cap.plugin.zip"
           done
           # sha256 清单与 zip 同批生成、同批上传:生成点与上传点必须是同一份文件,

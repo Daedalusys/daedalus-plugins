@@ -32,11 +32,11 @@ permissions:
 
 # cap 清单唯一事实源:build/test 与 i18n 两步共用,避免两处各写一份而漂移。
 env:
-  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot"
-  # 13 个 cap 共同 require 的 SDK 版本(唯一事实源)。checkout 按下钉 tag,
+  CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot tx"
+  # 14 个 cap 共同 require 的 SDK 版本(唯一事实源)。checkout 按下钉 tag,
   # 并按它校验各 go.mod —— 此前 SDK 检出不带 ref,吃的是默认分支:
   # 同一个 commit 隔天重跑会拿到不同的 SDK,「v0.x.y 的 zip 可复现」不成立。
-  SDK_VERSION: "0.1.3"
+  SDK_VERSION: "0.2.0"
   # Go 工具链钉精确版本,与 release.yml 的 env.GO_VERSION 同值:
   # 浮动 patch 会让同一份源码在两条 workflow 里构建出不同字节的二进制。
   GO_VERSION: "1.26.0"
@@ -121,6 +121,11 @@ jobs:
           for cap in $CAPS; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o bin/ ./cmd/...)
+            # manifest 的 executable 是 release 腿的产物名事实源,这里按包目录名
+            # 产出二进制:两者一旦分叉,test 腿全绿而 release 腿才红,所以当场断言。
+            exe="$(sed -n 's/.*"executable"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cap/daedalus.plugin.json" | head -n 1)"
+            [ -n "$exe" ] || { echo "FAIL: $cap 的 manifest.executable 缺失" >&2; exit 1; }
+            [ -x "$cap/$exe" ] || { echo "FAIL: $cap 的 manifest.executable 未被构建出来: $exe" >&2; exit 1; }
             (cd "$cap" && go test ./...)
           done
 

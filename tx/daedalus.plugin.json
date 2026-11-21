@@ -1,0 +1,34 @@
+{
+  "id": "daedalus.tx",
+  "name": "Daedalus Transaction",
+  "version": "0.1.0",
+  "api_version": "0.1.0",
+  "license": "MIT",
+  "maintainer": "team@daedalusys.io",
+  "type": "capability",
+  "runtime": {
+    "name": "native"
+  },
+  "executable": "bin/daedalus-tx-mcp",
+  "tools": [
+    "tx_preview",
+    "tx_apply",
+    "tx_status",
+    "tx_list",
+    "tx_pending",
+    "tx_rollback"
+  ],
+  "permissions": {
+    "read": [
+      "/etc/daedalus",
+      "/run/daedalus",
+      "/opt/daedalus/shared"
+    ],
+    "write": [
+      "/run/daedalus/pending"
+    ],
+    "run": [
+      "/usr/local/bin/daedalus-tx"
+    ]
+  }
+}
