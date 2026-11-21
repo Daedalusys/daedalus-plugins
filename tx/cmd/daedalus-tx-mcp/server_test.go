@@ -38,8 +38,8 @@ func TestServerRegistersExactlyManifestTools(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("注册工具 %v 与 manifest.tools %v 不一致(76 脚本会据此拒构建)", got, want)
 	}
-	if len(got) != 6 {
-		t.Fatalf("工具数 = %d, 期望 6", len(got))
+	if len(got) != 7 {
+		t.Fatalf("工具数 = %d, 期望 7", len(got))
 	}
 }
 

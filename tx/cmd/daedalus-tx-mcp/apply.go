@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
@@ -24,6 +25,7 @@ const (
 // 都失去"到底缺什么"的信息。
 const (
 	codeGrantRequired      = "grant_required"
+	codeGrantForOtherUser  = "grant_for_other_user"
 	codeGrantRevoked       = "grant_revoked"
 	codeGrantInvalid       = "grant_invalid"
 	codeGrantUnauthorized  = "grant_unauthorized"
@@ -73,8 +75,11 @@ type applyRejection struct {
 	// ArgvSHA256 是待批准 argv 的指纹:人把它抄给 daedalus-tx approve --expect-sha256,
 	// 批准才绑定在自己看过的那一条命令上。
 	ArgvSHA256 string `json:"argv_sha256,omitempty"`
-	Reason     string `json:"reason"`
-	Detail     string `json:"detail,omitempty"`
+	// AvailableGrants 回带"你手上其实能用哪些条子":条子目录对 agent 不可见,
+	// 只靠人抄 id 的话,一张能用的条子等于不存在。
+	AvailableGrants []grantBrief `json:"available_grants,omitempty"`
+	Reason          string       `json:"reason"`
+	Detail          string       `json:"detail,omitempty"`
 }
 
 // txApply 是一次受控变更的完整判定与执行。审计在这里统一写:不论执行、幂等、
@@ -184,13 +189,16 @@ func runTransaction(view previewView, args map[string]any) (applyView, *applyRej
 // runWithGrant 走第二档:条子是必要条件,校验与记账在消费侧完成。
 func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[string]any) (applyView, *applyRejection) {
 	if in.GrantID == "" {
-		return deny(args, &applyRejection{
+		rej := &applyRejection{
 			Error:         codeGrantRequired,
 			Tier:          view.Tier,
 			RequiredScope: requiredScope(view),
 			Reason:        "需要授权条子",
-			Detail:        "请让有权签发的人执行 daedalus-tx grant add --scope <required_scope>,然后把条子 id 作为 grant_id 传入",
-		})
+			Detail: fmt.Sprintf("请让有权签发的人执行 daedalus-tx grant add --for %s --scope %s,然后把条子 id 作为 grant_id 传入",
+				grantForTarget(), strings.Join(requiredScope(view), " ")),
+		}
+		attachAvailableGrants(rej)
+		return deny(args, rej)
 	}
 	// 审计只记条子 id:条子里的 note 与自报字段一律不进链。
 	args["grant_id"] = in.GrantID
@@ -206,6 +214,10 @@ func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[s
 	}
 	if rej := consumeGrant(cfg, in.GrantID, scope, time.Now()); rej != nil {
 		rej.Tier = view.Tier
+		// 传了条子却不是给你的:顺手告诉它该换成哪张。
+		if rej.Error == codeGrantForOtherUser {
+			attachAvailableGrants(rej)
+		}
 		return deny(args, rej)
 	}
 
@@ -219,7 +231,7 @@ func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[s
 
 // runHuman 走第三档:条子不构成许可;只出待办,等人批准同一份 argv。
 func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *applyRejection) {
-	pendingID := pendingIDFor(in.Kind, view.Name, view.DesiredState, view.Scope)
+	pendingID := pendingIDFor(in.Kind, view.Name, view.DesiredState, view.Scope, executorUID)
 	args["pending_id"] = pendingID
 
 	status, approval, err := loadApproval(pendingID, view.Argv, time.Now())
@@ -296,6 +308,25 @@ func deny(args map[string]any, rej *applyRejection) (applyView, *applyRejection)
 	args["error"] = rej.Error
 	recordAudit(toolApply, "denied", args, nil)
 	return applyView{}, rej
+}
+
+// attachAvailableGrants 在拒绝体上回带「你手上其实能用哪些条子」。
+// 枚举失败就不带:宁可少一条线索,也不让拒绝本身因为附加信息变成另一个错误。
+func attachAvailableGrants(rej *applyRejection) {
+	usable, _, err := listUsableGrants()
+	if err != nil || len(usable) == 0 {
+		return
+	}
+	rej.AvailableGrants = usable
+}
+
+// grantForTarget 是签发建议里的 --for 取值:翻不出账号名时退回占位符,
+// 让文案仍然可照抄(空值会变成一句读不通的话)。
+func grantForTarget() string {
+	if executorName == "" {
+		return "<你的用户名>"
+	}
+	return executorName
 }
 
 // alreadyInDesiredState 判定"没有变更可做"。只收三个不涉及中间态的组合:

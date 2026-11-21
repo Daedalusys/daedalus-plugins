@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -105,11 +106,16 @@ func approvalsDir() string {
 	return defaultApprovalsDir
 }
 
-// pendingIDFor 由意图(kind + 单元名 + 期望状态 + 作用域)派生一个确定性 id。
+// pendingIDFor 由意图(kind + 单元名 + 期望状态 + 作用域 + 执行者)派生一个确定性 id。
 // 确定性是这套机制能闭合的原因:AI 第二次对同一意图调用时不需要客户端记住上次的
 // id,就能找到人批准的那一条;改动任何参数都会得到新 id,也就没有可用的批准。
-func pendingIDFor(kind, unit, desiredState, scope string) string {
-	intent := strings.Join([]string{kind, unit, desiredState, scope}, "\x00")
+//
+// 执行者必须并进派生输入:两个用户的助手对同一意图会撞同一个 id,于是 root 批一份,
+// 两个人的 agent 都能用;带上执行者,批准才只对一个人成立。
+func pendingIDFor(kind, unit, desiredState, scope string, executorUID uint32) string {
+	intent := strings.Join([]string{
+		kind, unit, desiredState, scope, strconv.FormatUint(uint64(executorUID), 10),
+	}, "\x00")
 	sum := sha256.Sum256([]byte(intent))
 	return "p-" + hex.EncodeToString(sum[:8])
 }
