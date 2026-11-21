@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
 )
 
@@ -113,44 +114,81 @@ func TestTxPreviewIsSideEffectFree(t *testing.T) {
 	}
 }
 
-// 占位工具必须返回结构化错误(机器可读),而不是裸字符串。
-func TestPlaceholderToolsReturnStructuredError(t *testing.T) {
+// 四个新工具经真实 MCP 调用返回结构化结果(不再是占位错误):非法 tx-id 在触碰
+// CLI 之前当场拒绝,空日志/待办目录给出空列表。
+func TestReadToolsAreWiredThroughMCPSession(t *testing.T) {
+	isolateRuntime(t)
+	root := t.TempDir()
+	t.Setenv("DAEDALUS_TX_DIR", filepath.Join(root, "tx"))
+	t.Setenv("DAEDALUS_PENDING_DIR", filepath.Join(root, "pending"))
+	t.Setenv(audit.EnvLogPath, filepath.Join(root, "audit.jsonl"))
+
 	session, closeSession := connectTestSession(t, defaultConfig())
 	defer closeSession()
 
-	for _, tc := range []struct {
-		name string
-		args map[string]any
-	}{
-		{"tx_status", map[string]any{"tx_id": "0123456789abcdef"}},
-		{"tx_list", map[string]any{}},
-		{"tx_pending", map[string]any{}},
-		{"tx_rollback", map[string]any{"tx_id": "0123456789abcdef"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-				Name:      tc.name,
-				Arguments: tc.args,
-			})
-			if err != nil {
-				t.Fatalf("CallTool: %v", err)
-			}
-			if !res.IsError {
-				t.Fatal("占位工具应标记 isError")
-			}
-			text, ok := res.Content[0].(*mcp.TextContent)
-			if !ok {
-				t.Fatalf("内容类型 = %T", res.Content[0])
-			}
-			var payload map[string]string
-			if err := json.Unmarshal([]byte(text.Text), &payload); err != nil {
-				t.Fatalf("不是结构化 JSON: %v (%q)", err, text.Text)
-			}
-			if payload["error"] != "unsupported in this phase" {
-				t.Fatalf("error = %q", payload["error"])
-			}
-		})
+	call := func(name string, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("CallTool %s: %v", name, err)
+		}
+		return res
 	}
+
+	// tx_list:journal 目录没有事务 ⇒ 空列表,不是错误。
+	res := call("tx_list", map[string]any{})
+	if res.IsError {
+		t.Fatalf("tx_list 不应报错: %+v", res.Content)
+	}
+	var listed listView
+	if err := json.Unmarshal([]byte(textOf(t, res)), &listed); err != nil {
+		t.Fatalf("tx_list 返回不是 JSON: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("tx_list items = %+v", listed.Items)
+	}
+
+	// tx_pending:待办目录不存在 ⇒ 空列表(且不创建目录)。
+	res = call("tx_pending", map[string]any{})
+	if res.IsError {
+		t.Fatalf("tx_pending 不应报错: %+v", res.Content)
+	}
+	var pending pendingView
+	if err := json.Unmarshal([]byte(textOf(t, res)), &pending); err != nil {
+		t.Fatalf("tx_pending 返回不是 JSON: %v", err)
+	}
+	if len(pending.Items) != 0 {
+		t.Fatalf("tx_pending items = %+v", pending.Items)
+	}
+
+	// tx_status / tx_rollback:非法 id 在触碰 CLI 之前就被拒(没有装假 CLI,
+	// 真调 CLI 会因路径不存在而报另一种错误)。
+	for _, name := range []string{"tx_status", "tx_rollback"} {
+		res := call(name, map[string]any{"tx_id": "../etc/passwd"})
+		if !res.IsError {
+			t.Fatalf("%s 对非法 id 应标记 isError", name)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(textOf(t, res)), &payload); err != nil {
+			t.Fatalf("%s 返回不是结构化 JSON: %v", name, err)
+		}
+		if payload["error"] != codeInvalidTxID {
+			t.Fatalf("%s error = %q, 期望 %q", name, payload["error"], codeInvalidTxID)
+		}
+	}
+}
+
+// textOf 取单文本块的正文。
+func textOf(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) != 1 {
+		t.Fatalf("期望单文本块, 收到 %d 块", len(res.Content))
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("内容类型 = %T", res.Content[0])
+	}
+	return text.Text
 }
 
 // 拒绝面经真实 MCP 调用也必须是结构化原因:schema 不提前用 enum 拦,否则客户端

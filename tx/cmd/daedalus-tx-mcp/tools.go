@@ -1,9 +1,9 @@
 // tools.go —— 六个工具的注册。工具名与 manifest.tools 逐字一致(76 脚本构建期
 // 交叉核对 manifest ↔ 二进制 tools/list,漂移即构建失败)。
 //
-// 已实现 tx_preview(只读判定)与 tx_apply(按档位执行);其余四个照常注册但返回
-// 结构化错误 "unsupported in this phase" —— 工具清单一次定死,客户端看到的契约
-// 不随分期变。
+// tx_preview / tx_apply 是判定与执行面,tx_status / tx_list / tx_pending 是只读面,
+// tx_rollback 是"重新判定后再执行"的写面 —— 六个工具一次定死,客户端看到的契约
+// 不随实现进度变。
 package main
 
 import (
@@ -119,60 +119,96 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "tx_status",
-		Description: "按 tx_id 读事务 journal(本阶段未实现,返回 {\"error\":\"unsupported in this phase\"})。",
+		Name: "tx_status",
+		Description: "按 tx_id 读一条事务 journal 的核心字段(只读):state 是 proposed/applying/applied/" +
+			"rolled_back/failed 之一,steps 是逐步的适配器执行记录。\n\n" +
+			"参数:\n    tx_id: 16 位小写十六进制事务 ID。\n\n" +
+			"返回:{tx_id,state,steps[]}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"tx_id": {Type: "string", Description: "事务 ID。"},
+				"tx_id": {Type: "string", Description: "16 位小写十六进制事务 ID。"},
 			},
 			Required: []string{"tx_id"},
 		},
 		Annotations: readOnlyAnnotations,
-	}, unsupportedInPhase)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in statusIn) (*mcp.CallToolResult, any, error) {
+		view, serr := txStatus(in)
+		if serr != nil {
+			return errorResult(serr), nil, nil
+		}
+		return jsonResult(view), nil, nil
+	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "tx_list",
-		Description: "列出最近的事务(本阶段未实现,返回 {\"error\":\"unsupported in this phase\"})。",
+		Name: "tx_list",
+		Description: "列出最近的事务(只读):直接枚举事务 journal,按时间倒序;limit 省略或为 0 表示全部。\n\n" +
+			"参数:\n    limit: 可选,最多返回条数(正整数)。\n\n" +
+			"返回:{items:[{tx_id,state,created_at}]}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"limit": {Type: "integer", Description: "最多返回条数。"},
+				"limit": {Type: "integer", Description: "最多返回条数;省略或 0 表示全部。"},
 			},
 		},
 		Annotations: readOnlyAnnotations,
-	}, unsupportedInPhase)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in listIn) (*mcp.CallToolResult, any, error) {
+		view, serr := txList(in)
+		if serr != nil {
+			return errorResult(serr), nil, nil
+		}
+		return jsonResult(view), nil, nil
+	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "tx_pending",
-		Description: "列出待人批准的动作(本阶段未实现,返回 {\"error\":\"unsupported in this phase\"})。",
+		Name: "tx_pending",
+		Description: "列出等人批准的动作(只读,绝不写待办目录):每条含将执行的 argv 与 argv_sha256," +
+			"人把指纹抄给 daedalus-tx approve --expect-sha256 才算批准了同一份命令。\n\n" +
+			"返回:{items:[{id,kind,name,desired_state,scope,argv[],argv_sha256,reason,created_at,expires_at}]}。",
 		InputSchema: &jsonschema.Schema{Type: "object"},
 		Annotations: readOnlyAnnotations,
-	}, unsupportedInPhase)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		view, serr := txPending()
+		if serr != nil {
+			return errorResult(serr), nil, nil
+		}
+		return jsonResult(view), nil, nil
+	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "tx_rollback",
-		Description: "按 tx_id 回滚(本阶段未实现,返回 {\"error\":\"unsupported in this phase\"})。回滚同样走档位判定,不是免票通道。",
+		Name: "tx_rollback",
+		Description: "按 tx_id 回滚(写面)。回滚同样走档位判定,不是免票通道:从 journal 的每一步" +
+			"重建目标作用域并重新认定属性,任一步落在第三档就整笔拒绝,且不调用 rollback。" +
+			"未知适配器或参数无法重建目标时同样 fail-closed。\n\n" +
+			"参数:\n    tx_id: 16 位小写十六进制事务 ID。\n\n" +
+			"返回(成功):{tx_id,outcome:\"rolled_back\",tier}。\n" +
+			"返回(拒绝):{error,tx_id,outcome:\"denied\",tier?,reason,detail?} —— error 是机器可读码:" +
+			"invalid_tx_id/tx_failed/nothing_to_rollback/unsupported_rollback_target/rollback_denied。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"tx_id": {Type: "string", Description: "事务 ID。"},
+				"tx_id": {Type: "string", Description: "16 位小写十六进制事务 ID。"},
 			},
 			Required: []string{"tx_id"},
 		},
 		Annotations: writeAnnotations,
-	}, unsupportedInPhase)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in rollbackIn) (*mcp.CallToolResult, any, error) {
+		view, rej := txRollback(cfg, in)
+		if rej != nil {
+			return rollbackResult(rej), nil, nil
+		}
+		return jsonResult(view), nil, nil
+	})
 
 	return server
 }
 
-// unsupportedInPhase 是占位工具的统一应答。结构化 JSON + isError:客户端能按
-// error 字段分支,不会把它误当成"执行成功但没有输出"。
-func unsupportedInPhase(_ context.Context, _ *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: `{"error":"unsupported in this phase"}`}},
-		IsError: true,
-	}, nil, nil
+// rollbackResult 把回滚拒绝写成 isError 结果:没有执行就是失败,不能让客户端把
+// "被拒"读成"回滚完成"。
+func rollbackResult(rej *rollbackRejection) *mcp.CallToolResult {
+	res := jsonResult(rej)
+	res.IsError = true
+	return res
 }
 
 // rejectionResult 把结构化拒绝写成 isError 结果:没有执行就是失败,不能让客户端
