@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -120,6 +121,10 @@ func listUsableGrants() (usable []grantBrief, invalid []grantInvalidEntry, err e
 			Expired:   g.Expired(now),
 		})
 	}
+	// 按 id 排序:目录枚举顺序不是契约,清单顺序漂移会让客户端的两份快照
+	// 看起来像"条子变了"。
+	sort.Slice(usable, func(i, j int) bool { return usable[i].ID < usable[j].ID })
+	sort.Slice(invalid, func(i, j int) bool { return invalid[i].File < invalid[j].File })
 	return usable, invalid, nil
 }
 
