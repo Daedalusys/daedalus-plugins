@@ -6,6 +6,9 @@
 // 单次性:SDK 只给"读计数"与"追加计数"两个原语,没有"检查+占用"的原子操作,
 // 所以"折叠 → 判定 → 记账"三步由本进程的同一把互斥锁串起来。跨进程并发不支持:
 // 同一台机器只应有一个 daedalus-tx-mcp 实例(多实例会让内存计数各自为政)。
+//
+// 残留语义:**max_uses 是速率限制,不是安全边界** —— 能写用量账本的用户可以
+// 少记,账本被自行截断即可归零。真正的边界是作用域 + TTL + 签发者上限。
 package main
 
 import (
@@ -180,6 +183,19 @@ func readGrantFile(path string) (ownerUID uint32, ownerName string, data []byte,
 		return 0, "", nil, err
 	}
 	defer f.Close()
+	// 打开之后再取一次属主:Lstat 与 Open 之间文件可能被换掉,而属主才是
+	// 签发者判定的依据。两处属主不一致就是"换过",按无效处理。
+	opened, err := f.Stat()
+	if err != nil {
+		return 0, "", nil, fmt.Errorf("读取条子文件 %s 的属主失败: %v", path, err)
+	}
+	openedStat, ok := opened.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, "", nil, fmt.Errorf("无法判定条子文件 %s 的属主", path)
+	}
+	if openedStat.Uid != stat.Uid {
+		return 0, "", nil, fmt.Errorf("条子文件 %s 在读取前被换掉(属主 %d ≠ %d),拒绝", path, openedStat.Uid, stat.Uid)
+	}
 	data, err = readCappedReader(f, maxGrantFileBytes)
 	if err != nil {
 		return 0, "", nil, err
@@ -251,6 +267,11 @@ func (l *usageLedger) loadLocked() error {
 	if err != nil {
 		return fmt.Errorf("解析用量日志路径失败: %w", err)
 	}
+	// 用量账本落在用户 HOME 之下 ⇒ fail-closed。那条文件的属主就是跑 MCP 的
+	// 用户,自己截断再重连就能把 max_uses 归零(跨重启可重置)。
+	if err := rejectUsageUnderHome(path); err != nil {
+		return err
+	}
 	counts, err := grant.UsedCounts(path)
 	if err != nil {
 		return fmt.Errorf("折叠用量记账失败: %w", err)
@@ -259,4 +280,39 @@ func (l *usageLedger) loadLocked() error {
 	l.counts = counts
 	l.loaded = true
 	return nil
+}
+
+// rejectUsageUnderHome 判定用量账本是否落在用户 HOME 之下。
+// HOME 下的文件属主就是调用用户,写了就能改 —— 计数被人改过,max_uses 就不是
+// 上限而是建议。
+//
+// 残留语义:即便账本落在系统路径上,能写它的用户仍可以少记。所以 **max_uses
+// 是速率限制,不是安全边界**;真正的边界是作用域 + TTL + 签发者上限。
+func rejectUsageUnderHome(path string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// 解析不出 HOME 就无法判定归属:宁可当成"可能在 HOME 下"而拒绝,
+		// 也不放行一条自己可能截断的账本。
+		return fmt.Errorf("用量账本路径 %s 无法判定是否落在用户 HOME 下(拒绝执行): %v", path, err)
+	}
+	if home == "" {
+		return fmt.Errorf("用量账本路径 %s 无法判定是否落在用户 HOME 下(HOME 为空,拒绝执行)", path)
+	}
+	if pathUnderDir(path, home) {
+		return fmt.Errorf("用量账本 %s 落在用户 HOME(%s)之下:用量账本不得落在用户 HOME(可被自行截断),拒绝执行", path, home)
+	}
+	return nil
+}
+
+// pathUnderDir 判定 path 是否落在 dir 之下(含 dir 本身)。
+// 用相对路径而不是字符串前缀:/home/user2 不是 /home/user 的子目录。
+func pathUnderDir(path, dir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

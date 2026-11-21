@@ -34,6 +34,7 @@ const (
 	codeApprovalRequired   = "human_approval_required"
 	codeApprovalUntrusted  = "approval_untrusted"
 	codeApprovalMismatch   = "approval_mismatch"
+	codeApprovalStale      = "approval_stale"
 	codePendingWriteFailed = "pending_write_failed"
 	codeTxFailed           = "tx_failed"
 )
@@ -102,8 +103,27 @@ func txApply(cfg *autonomy.Config, in applyIn) (applyView, *applyRejection) {
 	args["scope"] = view.Scope
 	args["decision_path"] = []string{view.Reason}
 
+	// 事务的两键必须与"将被批准的 argv"同源:从这里往下,单元名与期望状态
+	// 一律取 argv 反解出来的值,不再抄请求里的字面量 —— 否则改了动词表,
+	// 批准的是一条命令、执行的却是另一个动作。
+	intent, ok := serviceSetIntentFromArgv(view.Argv)
+	if !ok {
+		args["error"] = codeTxFailed
+		recordAudit(toolApply, "denied", args, nil)
+		return applyView{}, &applyRejection{
+			Error:  codeTxFailed,
+			Tier:   view.Tier,
+			Reason: "待执行 argv 与事务两键对不上,拒绝执行",
+			Detail: fmt.Sprintf("argv=%v", view.Argv),
+		}
+	}
+	view.Name = intent.unit
+	view.DesiredState = intent.desiredState
+	args["name"] = intent.unit
+	args["desired_state"] = intent.desiredState
+
 	// 幂等先于档位分派:没有任何变更发生,也就没有需要授权的动作。
-	if alreadyInDesiredState(in.DesiredState, obs) {
+	if alreadyInDesiredState(view.DesiredState, obs) {
 		recordAudit(toolApply, "noop", args, nil)
 		return applyView{
 			Tier:    view.Tier,
@@ -116,7 +136,7 @@ func txApply(cfg *autonomy.Config, in applyIn) (applyView, *applyRejection) {
 
 	switch autonomy.Tier(view.Tier) {
 	case autonomy.TierAuto:
-		return runTransaction(in, view, args)
+		return runTransaction(view, args)
 	case autonomy.TierConfirm:
 		return runWithGrant(cfg, in, view, args)
 	default:
@@ -125,8 +145,21 @@ func txApply(cfg *autonomy.Config, in applyIn) (applyView, *applyRejection) {
 }
 
 // runTransaction 真正执行变更:begin → propose → apply,三步任何一步失败都如实报错。
-func runTransaction(in applyIn, view previewView, args map[string]any) (applyView, *applyRejection) {
-	txID, err := runServiceSetTransaction(view.Name, in.DesiredState)
+//
+// propose 的两键(name + desired_state)从**被批准的 argv**反解而来,不是从请求
+// 里抄:批准与执行必须是同一件事的两种写法,否则改了动词表就会批准另一个动作。
+// 反解不出来就拒绝 —— 绝不猜,更不能退回请求里的期望状态。
+func runTransaction(view previewView, args map[string]any) (applyView, *applyRejection) {
+	intent, ok := serviceSetIntentFromArgv(view.Argv)
+	if !ok {
+		return deny(args, &applyRejection{
+			Error:  codeTxFailed,
+			Tier:   view.Tier,
+			Reason: "待执行 argv 与事务两键对不上,拒绝执行",
+			Detail: fmt.Sprintf("argv=%v", view.Argv),
+		})
+	}
+	txID, err := runServiceSetTransaction(intent.unit, intent.desiredState)
 	if err != nil {
 		args["error"] = shortErrText(err)
 		recordAudit(toolApply, "error", args, err)
@@ -177,7 +210,7 @@ func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[s
 	}
 
 	// 条子通过 ⇒ 记账已完成,先记账再执行。执行结果直接决定 outcome。
-	result, rej := runTransaction(in, view, args)
+	result, rej := runTransaction(view, args)
 	if rej == nil {
 		result.GrantID = in.GrantID
 	}
@@ -186,10 +219,10 @@ func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[s
 
 // runHuman 走第三档:条子不构成许可;只出待办,等人批准同一份 argv。
 func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *applyRejection) {
-	pendingID := pendingIDFor(in.Kind, view.Name, in.DesiredState, view.Scope)
+	pendingID := pendingIDFor(in.Kind, view.Name, view.DesiredState, view.Scope)
 	args["pending_id"] = pendingID
 
-	status, approval, err := loadApproval(pendingID, view.Argv)
+	status, approval, err := loadApproval(pendingID, view.Argv, time.Now())
 	switch status {
 	case approvalUntrusted:
 		// 目录/记录在审查之后被换掉的可能必须当拒绝处理,不能当"没有批准"。
@@ -206,9 +239,18 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 			Reason: "批准的不是这一条 argv(参数变了就是新动作)",
 			Detail: "批准记录里的 argv_sha256 与本次将执行的 argv 不一致,请重新申请待办并重新批准",
 		})
+	case approvalStale:
+		// 批准过期不是"没批准":重新出一份待办会把人已经批过的事实抹掉,
+		// 而过期这件事必须让人看见 —— 所以单独一个码,要求重新申请、重新批。
+		return deny(args, &applyRejection{
+			Error:  codeApprovalStale,
+			Tier:   view.Tier,
+			Reason: "批准已过新鲜度窗口,拒绝执行",
+			Detail: shortErrText(err),
+		})
 	case approvalTrusted:
 		args["approved_by"] = approval.ApprovedBy
-		result, rej := runTransaction(in, view, args)
+		result, rej := runTransaction(view, args)
 		if rej == nil {
 			result.PendingID = pendingID
 			result.ApprovedBy = approval.ApprovedBy
@@ -221,7 +263,7 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 		ID:           pendingID,
 		Kind:         in.Kind,
 		Name:         view.Name,
-		DesiredState: in.DesiredState,
+		DesiredState: view.DesiredState,
 		Argv:         view.Argv,
 		Scope:        view.Scope,
 		Reason:       "tier=human (" + view.Reason + ")",
