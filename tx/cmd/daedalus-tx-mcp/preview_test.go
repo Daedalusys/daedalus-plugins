@@ -53,12 +53,17 @@ transient_retry_max = 1
 heartbeat_timeout_seconds = 1
 `
 
-// isolateRuntime 把两个配置注入口都指到临时目录下的不存在文件:档位表 ⇒ 出厂默认,
-// 策略 ⇒ 只告警不合并(正是生产里"没装策略"的形态)。
+// isolateRuntime 把两个配置注入口都指到临时目录:档位表缺失 ⇒ 出厂默认,
+// 策略写一份最小可用夹具 ⇒ loadRuntime 正常返回(缺策略即拒启由专门用例覆盖)。
 func isolateRuntime(t *testing.T) {
 	t.Helper()
-	t.Setenv(autonomy.EnvPath, filepath.Join(t.TempDir(), "agent-autonomy.toml"))
-	t.Setenv("DAEDALUS_POLICY_PATH", filepath.Join(t.TempDir(), "policy.toml"))
+	dir := t.TempDir()
+	t.Setenv(autonomy.EnvPath, filepath.Join(dir, "agent-autonomy.toml"))
+	policyPath := filepath.Join(dir, "policy.toml")
+	if err := os.WriteFile(policyPath, []byte(testPolicyTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DAEDALUS_POLICY_PATH", policyPath)
 }
 
 func defaultConfig() *autonomy.Config {
@@ -247,17 +252,58 @@ func TestLoadRuntimeAutonomyFallbackAndFailure(t *testing.T) {
 	}
 }
 
-// 启动期拒启是进程行为:用子进程跑 main(),断言退出码 2。
+// 危险名单是必需输入:policy.toml 缺失 ⇒ 拒绝启动(退出码 2),不是"只告警继续"。
+func TestPluginRefusesToStartOnMissingPolicy(t *testing.T) {
+	dir := t.TempDir()
+	var stderr bytes.Buffer
+	code := runHelperProcess(t, []string{
+		autonomy.EnvPath + "=" + filepath.Join(dir, "agent-autonomy.toml"),
+		"DAEDALUS_POLICY_PATH=" + filepath.Join(dir, "policy.toml"),
+	}, &stderr)
+	if code != exitStartupFailure {
+		t.Fatalf("退出码 = %d, 期望 %d", code, exitStartupFailure)
+	}
+	if !strings.Contains(stderr.String(), "危险名单不可用") || !strings.Contains(stderr.String(), "拒绝启动") {
+		t.Fatalf("stderr 未说明拒启原因: %q", stderr.String())
+	}
+}
+
+// 策略文件损坏(未知键)与缺失同归 fail-closed:严格加载失败 ⇒ 退出码 2。
+func TestPluginRefusesToStartOnBrokenPolicy(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "policy.toml")
+	if err := os.WriteFile(broken, []byte(testPolicyTOML+"unknown_key = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	code := runHelperProcess(t, []string{
+		autonomy.EnvPath + "=" + filepath.Join(dir, "agent-autonomy.toml"),
+		"DAEDALUS_POLICY_PATH=" + broken,
+	}, &stderr)
+	if code != exitStartupFailure {
+		t.Fatalf("退出码 = %d, 期望 %d", code, exitStartupFailure)
+	}
+	if !strings.Contains(stderr.String(), "危险名单不可用") || !strings.Contains(stderr.String(), "拒绝启动") {
+		t.Fatalf("stderr 未说明拒启原因: %q", stderr.String())
+	}
+}
+
+// 启动期拒启是进程行为:用子进程跑 main(),断言退出码 2。这里给出可用的策略,
+// 让失败只能归因于档位表 —— 否则策略缺失会先一步把进程拦下,用例就测不到本意。
 func TestPluginRefusesToStartOnBadAutonomyFile(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "agent-autonomy.toml")
 	if err := os.WriteFile(bad, []byte("[[rule]]\nscope = \"systemd:user:start:*\"\ntier = \"auto\"\nbogus = 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	goodPolicy := filepath.Join(dir, "policy.toml")
+	if err := os.WriteFile(goodPolicy, []byte(testPolicyTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var stderr bytes.Buffer
 	code := runHelperProcess(t, []string{
 		autonomy.EnvPath + "=" + bad,
-		"DAEDALUS_POLICY_PATH=" + filepath.Join(dir, "policy.toml"),
+		"DAEDALUS_POLICY_PATH=" + goodPolicy,
 	}, &stderr)
 	if code != exitStartupFailure {
 		t.Fatalf("退出码 = %d, 期望 %d", code, exitStartupFailure)

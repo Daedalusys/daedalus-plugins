@@ -165,7 +165,7 @@ jobs:
         # 目录(不在插件源目录内——若 -out 落在 -in 目录里,重跑时旧 zip 会被
         # 打进新 zip,zip-in-zip 递归膨胀)。
         # 打包源走"暂存目录"而非插件源目录:暂存只放 daedalus.plugin.json +
-        # bin/daedalus-<cap>。直接 -in "$cap" 会把 cmd/*.go + go.mod + go.sum +
+        # bin/<exe>(文件名取自 manifest 的 executable)。直接 -in "$cap" 会把 cmd/*.go + go.mod + go.sum +
         # testdata 全打进 zip,解包进镜像树安装态后泄漏源码进 /opt,违反零残留
         # 断言。blueprint 的 blueprints/ 已 //go:embed 进二进制,同样不入 zip。
         # -trimpath -buildvcs=false 与打包器构建同套 flags:workflow 会 rsync

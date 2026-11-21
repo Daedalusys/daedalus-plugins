@@ -121,6 +121,11 @@ jobs:
           for cap in $CAPS; do
             echo "== $cap =="
             (cd "$cap" && mkdir -p bin && go build -trimpath -buildvcs=false -o bin/ ./cmd/...)
+            # manifest 的 executable 是 release 腿的产物名事实源,这里按包目录名
+            # 产出二进制:两者一旦分叉,test 腿全绿而 release 腿才红,所以当场断言。
+            exe="$(sed -n 's/.*"executable"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cap/daedalus.plugin.json" | head -n 1)"
+            [ -n "$exe" ] || { echo "FAIL: $cap 的 manifest.executable 缺失" >&2; exit 1; }
+            [ -x "$cap/$exe" ] || { echo "FAIL: $cap 的 manifest.executable 未被构建出来: $exe" >&2; exit 1; }
             (cd "$cap" && go test ./...)
           done
 

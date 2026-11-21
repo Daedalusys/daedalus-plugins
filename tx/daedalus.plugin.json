@@ -21,8 +21,14 @@
   "permissions": {
     "read": [
       "/etc/daedalus",
-      "/run/daedalus"
+      "/run/daedalus",
+      "/opt/daedalus/shared"
     ],
-    "write": []
+    "write": [
+      "/run/daedalus/pending"
+    ],
+    "run": [
+      "/usr/local/bin/daedalus-tx"
+    ]
   }
 }

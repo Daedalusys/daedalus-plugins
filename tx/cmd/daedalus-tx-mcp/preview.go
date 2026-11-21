@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
 )
@@ -19,7 +20,9 @@ const (
 	adapterServiceSet = "service.set"
 	// 域只取这两个字面值:Classify 只认字面 "user",其余(含空串、大小写变体)
 	// 一律按最严处理,所以构造 Attributes 时必须显式赋值。
-	domainUser   = "user"
+	domainUser = "user"
+	// system 仅供契约钉桩:第三档提案文本与测试用它证明"system 域无条件人亲手",
+	// MCP 面不寻址 system 域。
 	domainSystem = "system"
 )
 
@@ -105,6 +108,8 @@ func preparePreview(in previewIn) (unit string, serr *structuredError) {
 func buildPreview(desiredState, unit, domain string, cfg *autonomy.Config, obs observation) (previewView, *structuredError) {
 	verb, ok := desiredStateVerbs[desiredState]
 	if !ok {
+		// 防御直调者:权威入参校验在 tools.go 的入参面,这里只保证判定函数自身
+		// 不会拿空动词组装出看起来可执行的 argv。
 		return previewView{}, &structuredError{
 			Error:  "unsupported_desired_state",
 			Detail: fmt.Sprintf("v1 动词集为 started/stopped/restarted/enabled/disabled,收到 %q", desiredState),
@@ -136,7 +141,8 @@ func buildPreview(desiredState, unit, domain string, cfg *autonomy.Config, obs o
 		Argv:          systemctlArgv(domain, verb, unit),
 		Attributes: previewAttributes{
 			Domain: domain,
-			// deny 命中(危险名单或高危属性)就是"机器自动查得的高危",如实回填。
+			// reason==deny 当前等价于"命中危险名单":Classify 只在名单命中处给出
+			// deny。这个反推依赖 SDK 的 reason 唯一性,不再成立时须改成显式命中判定。
 			HighRisk: decision.Reason == autonomy.ReasonDeny,
 			Enabled:  obs.enabled,
 			Running:  obs.running,
@@ -175,7 +181,7 @@ func normalizeUnitName(name string) (string, error) {
 func observeUnit(unit string) observation {
 	stdout, stderrText, rc, err := runTx("service-observe", "--unit", unit)
 	if err != nil || rc != 0 {
-		fmt.Fprintf(os.Stderr, "%s: service-observe %s 失败(按查不到处理): rc=%d err=%v stderr=%s\n",
+		reportObserveFailure(unit, "%s: service-observe %s 失败(按查不到处理): rc=%d err=%v stderr=%s\n",
 			serverName, unit, rc, err, strings.TrimSpace(stderrText))
 		return observation{}
 	}
@@ -186,11 +192,31 @@ func observeUnit(unit string) observation {
 		Known   *bool `json:"known"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &wire); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: service-observe 输出无法解析(按查不到处理): %v\n", serverName, err)
+		reportObserveFailure(unit, "%s: service-observe 输出无法解析(按查不到处理): %v\n", serverName, err)
 		return observation{}
 	}
 	if wire.Known == nil || !*wire.Known || wire.Enabled == nil || wire.Running == nil {
 		return observation{}
 	}
 	return observation{enabled: *wire.Enabled, running: *wire.Running, known: true}
+}
+
+// observeFailureSeen 记住已经告警过的单元:tx_preview 是高频只读调用,同一个
+// 查不到的单元每次都刷一行会把 stderr 变成噪声,真实故障反而被淹掉。
+// 只记首次,不因后续成功而清除 —— 同一单元反复查不到仍是同一件事。
+var (
+	observeFailureMu   sync.Mutex
+	observeFailureSeen = map[string]bool{}
+)
+
+// reportObserveFailure 每个单元只打印第一次失败,其余静默。
+func reportObserveFailure(unit, format string, args ...any) {
+	observeFailureMu.Lock()
+	seen := observeFailureSeen[unit]
+	observeFailureSeen[unit] = true
+	observeFailureMu.Unlock()
+	if seen {
+		return
+	}
+	fmt.Fprintf(os.Stderr, format, args...)
 }

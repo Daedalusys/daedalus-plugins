@@ -12,9 +12,12 @@ import (
 	"github.com/Daedalusys/daedalus-sdk/policy"
 )
 
-// loadRuntime 读档位表与危险名单并合流。档位表读坏 ⇒ error(调用方以退出码 2
-// 拒启);策略文件不可用 ⇒ 只保留档位表自带的 deny_names 并告警 —— 危险名单
-// 缺失只会让判定更严,不会放宽,因此不值得让整个写通道拒绝启动。
+// loadRuntime 读档位表与危险名单并合流。两者都是必需输入:任一不可用 ⇒ error,
+// 调用方以退出码 2 拒启。
+//
+// 危险名单不能降级成"只告警":缺名单时出厂预设会把一个 enabled && !running 的
+// 高危单元(如 sshd.service)判成 auto,AI 就在"名单读不到"的机器上自主变更了,
+// 而客户端只看得到一条 stderr —— 拒启是唯一不留这条缝的形态。
 func loadRuntime(stderr io.Writer) (*autonomy.Config, error) {
 	cfg, err := autonomy.LoadConfigured()
 	switch {
@@ -28,8 +31,9 @@ func loadRuntime(stderr io.Writer) (*autonomy.Config, error) {
 
 	p, perr := policy.Load(policyPath())
 	if perr != nil {
-		fmt.Fprintf(stderr, "%s: 策略不可用,危险名单未合并(仅用档位表 deny_names): %v\n", serverName, perr)
-		return cfg, nil
+		// 先落 stderr:拒绝启动是这条边唯一的人工可见信号,措辞要能直接指向裁决。
+		fmt.Fprintf(stderr, "%s: 危险名单不可用 ⇒ 拒绝启动(AI 不得在缺名单时自主变更): %v\n", serverName, perr)
+		return nil, fmt.Errorf("危险名单不可用: %w", perr)
 	}
 	// 审计与判定同读一份策略:同一身份分裂写进多条链会让 verify 必判断链。
 	policyAuditLogPath = p.Audit.LogPath
