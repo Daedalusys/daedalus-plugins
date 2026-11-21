@@ -16,6 +16,7 @@
     "tx_status",
     "tx_list",
     "tx_pending",
+    "tx_grants",
     "tx_rollback"
   ],
   "permissions": {

@@ -377,7 +377,7 @@ func TestTxApplyConfirmTierWithGrantApplies(t *testing.T) {
 		t.Fatal("条子明文(note)不得进审计链")
 	}
 
-	usage, err := os.ReadFile(filepath.Join(f.txDir, grant.UsageFileName))
+	usage, err := os.ReadFile(filepath.Join(f.txDir, grant.UsageFileNameFor(executorUID)))
 	if err != nil {
 		t.Fatalf("用量记账未落盘: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestTxApplyRejectsExhaustedGrant(t *testing.T) {
 	}
 	seed := fmt.Sprintf("{\"grant_id\":%q,\"used_at\":%q}\n",
 		g.ID, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(f.txDir, grant.UsageFileName), []byte(seed), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(f.txDir, grant.UsageFileNameFor(executorUID)), []byte(seed), 0o640); err != nil {
 		t.Fatal(err)
 	}
 

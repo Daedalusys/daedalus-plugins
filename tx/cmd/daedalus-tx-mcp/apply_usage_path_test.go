@@ -65,7 +65,7 @@ func TestTxApplyAcceptsUsageLedgerOutsideHome(t *testing.T) {
 	if view.Outcome != "applied" {
 		t.Fatalf("view = %+v", view)
 	}
-	if _, err := os.Stat(filepath.Join(txDir, grant.UsageFileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(txDir, grant.UsageFileNameFor(executorUID))); err != nil {
 		t.Fatalf("用量记账未落在指定目录: %v", err)
 	}
 }

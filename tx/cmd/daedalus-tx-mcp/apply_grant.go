@@ -1,7 +1,9 @@
-// apply_grant.go —— 第二档的条子消费:读文件、按文件属主判定签发者、记账后放行。
+// apply_grant.go —— 第二档的条子消费:读文件、按文件属主判定签发者、按执行者判定
+// 归属、记账后放行。
 //
 // 校验的唯一权威在消费侧:签发命令签完那一刻的结论不算数,这里按"文件属主 +
-// 签发者名单 + 上限 + 覆盖关系 + 用量"重新判一遍。JSON 里的 issued_by 只是线索。
+// 签发者名单 + 上限 + 覆盖关系 + 用量 + 执行者绑定"重新判一遍。JSON 里的
+// issued_by 只是线索。
 //
 // 单次性:SDK 只给"读计数"与"追加计数"两个原语,没有"检查+占用"的原子操作,
 // 所以"折叠 → 判定 → 记账"三步由本进程的同一把互斥锁串起来。跨进程并发不支持:
@@ -39,6 +41,15 @@ const (
 
 // errGrantExhausted 把"次数用完"与"记账失败"区分开:前者是正常拒绝,后者是故障。
 var errGrantExhausted = errors.New("条子已用尽")
+
+// 执行者身份取进程 euid:它就是 systemctl --user 实际以之行动的身份(MCP 是
+// stdio 子进程,继承客户端 uid,不是 systemd 单元用户)。
+// 做成变量是为了测试能换一个身份(非 root 测试进程造不出"别人的文件")。
+var executorUID = uint32(os.Geteuid())
+
+// executorName 只作展示(条子文件里的 for_user、拒绝体与清单里的名字)。
+// 判定一律以 executorUID 为准:账号名会改、会被复用,uid 不会。
+var executorName = lookupUserName(executorUID)
 
 func grantsDir() string {
 	if v := os.Getenv(envGrantsDir); v != "" {
@@ -80,8 +91,8 @@ func validateGrantID(id string) error {
 	return nil
 }
 
-// consumeGrant 完成一次条子消费:读 → Parse → Authorize → Covers → 未过期 → 记账。
-// 返回 nil 表示"可以执行且用量已记上";返回拒绝表示一步都不许动。
+// consumeGrant 完成一次条子消费:读 → Parse → 执行者绑定 → Authorize → Covers →
+// 未过期 → 记账。返回 nil 表示"可以执行且用量已记上";返回拒绝表示一步都不许动。
 func consumeGrant(cfg *autonomy.Config, grantID string, scope autonomy.Scope, now time.Time) *applyRejection {
 	path, err := grantPath(grantsDir(), grantID)
 	if err != nil {
@@ -112,6 +123,12 @@ func consumeGrant(cfg *autonomy.Config, grantID string, scope autonomy.Scope, no
 			Reason: "条子文件内容与 id 不一致",
 			Detail: fmt.Sprintf("文件名 id=%q, 文件内 id=%q", grantID, g.ID),
 		}
+	}
+
+	// 先回答"这跟我有没有关系",再回答"它本身有没有效":一条别人的过期条子
+	// 应该报"不是给你的",而不是把别人的有效期细节讲给越权者听。
+	if err := grant.BindExecutor(g, ownerUID, ownerName, executorUID, executorName); err != nil {
+		return &applyRejection{Error: codeGrantForOtherUser, Reason: "条子不是给你的", Detail: err.Error()}
 	}
 
 	if err := grant.Authorize(cfg, g, ownerUID, ownerName, now); err != nil {
@@ -216,6 +233,9 @@ func lookupUserName(uid uint32) string {
 // usageLedger 是条子用量的进程内视图:首次消费时把 append-only 记账折叠成计数,
 // 之后以内存计数判定。"判定 + 记账"在同一把锁内完成 —— 只靠 RecordUse 的 flock
 // 挡不住两个请求同时读到旧计数。
+//
+// 账本归**记账的人**(执行者)所有,不是归签发者:全节点共用一个文件时,第一个
+// 创建者拥有它,第二个用户打不开 ⇒ 记账失败 ⇒ 他的第二档永远不可用。
 type usageLedger struct {
 	mu     sync.Mutex
 	loaded bool
@@ -258,12 +278,30 @@ func (l *usageLedger) load() error {
 	return l.loadLocked()
 }
 
+// snapshot 给出当前执行者账本的计数副本(只读工具用)。
+// 与判定共用同一份折叠结果:清单里展示的 used/remaining 必须与消费时真正
+// 用来判上限的计数一致,另读一份文件就会给出两套数字。
+func (l *usageLedger) snapshot() (map[string]int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.loadLocked(); err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int, len(l.counts))
+	for id, n := range l.counts {
+		counts[id] = n
+	}
+	return counts, nil
+}
+
 // loadLocked 是折叠本体(调用方持锁):成功才置 loaded,失败留下次重试。
 func (l *usageLedger) loadLocked() error {
 	if l.loaded {
 		return nil
 	}
-	path, err := grant.UsageLogPath()
+	// 账本按执行者分文件:读的必须是"记账的人"那一本,否则展示的用量与
+	// 判定用的计数会是两个人的账。
+	path, err := grant.UsageLogPathFor(executorUID)
 	if err != nil {
 		return fmt.Errorf("解析用量日志路径失败: %w", err)
 	}

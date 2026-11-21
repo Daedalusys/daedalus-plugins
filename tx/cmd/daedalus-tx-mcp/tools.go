@@ -1,9 +1,9 @@
-// tools.go —— 六个工具的注册。工具名与 manifest.tools 逐字一致(76 脚本构建期
+// tools.go —— 七个工具的注册。工具名与 manifest.tools 逐字一致(76 脚本构建期
 // 交叉核对 manifest ↔ 二进制 tools/list,漂移即构建失败)。
 //
-// tx_preview / tx_apply 是判定与执行面,tx_status / tx_list / tx_pending 是只读面,
-// tx_rollback 是"重新判定后再执行"的写面 —— 六个工具一次定死,客户端看到的契约
-// 不随实现进度变。
+// tx_preview / tx_apply 是判定与执行面,tx_status / tx_list / tx_pending / tx_grants
+// 是只读面,tx_rollback 是"重新判定后再执行"的写面 —— 七个工具一次定死,客户端
+// 看到的契约不随实现进度变。
 package main
 
 import (
@@ -98,11 +98,13 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 			"    grant_id: 可选,第二档所需的条子 id(条子文件在 /run/daedalus/grants)。\n" +
 			"    actor: 可选,客户端自报身份,只作审计线索,不参与判定。\n\n" +
 			"返回(成功):{tx_id,tier,outcome:\"applied|noop\",grant_id?,pending_id?,approved_by?}。\n" +
-			"返回(拒绝):{error,tier,required_scope?,pending_id?,argv?,argv_sha256?,reason,detail?} —— " +
-			"error 是机器可读码:grant_required/grant_expired/grant_exhausted/grant_scope_mismatch/" +
-			"grant_revoked/grant_unauthorized/grant_invalid/grant_usage_failed/" +
+			"返回(拒绝):{error,tier,required_scope?,pending_id?,argv?,argv_sha256?,available_grants?,reason,detail?} —— " +
+			"error 是机器可读码:grant_required/grant_for_other_user/grant_expired/grant_exhausted/" +
+			"grant_scope_mismatch/grant_revoked/grant_unauthorized/grant_invalid/grant_usage_failed/" +
 			"human_approval_required/approval_untrusted/approval_mismatch/approval_stale/" +
-			"pending_write_failed/tx_failed。",
+			"pending_write_failed/tx_failed。\n" +
+			"available_grants 是「你手上其实能用哪些条子」:grant_required 与 grant_for_other_user\n" +
+			"会回带它,不必再猜该传哪个 id。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -174,6 +176,24 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 		Annotations: readOnlyAnnotations,
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		view, serr := txPending()
+		if serr != nil {
+			return errorResult(serr), nil, nil
+		}
+		return jsonResult(view), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "tx_grants",
+		Description: "列出「当前执行者手上能用的授权条子」(只读):只含绑定到本进程身份(euid)的条子," +
+			"别人的条子不会出现。过期的条子照列并标 expired(隐藏它们会让人误以为根本没签过)。\n\n" +
+			"used/remaining 取自执行者自己的用量账本,与消费时判上限的计数同源。\n" +
+			"坏文件不挡清单,单独进 invalid[]。\n\n" +
+			"返回:{executor:{uid,name},grants:[{id,scope[],expires_at,max_uses,used,remaining,expired}]," +
+			"invalid:[{file,error}]}。",
+		InputSchema: &jsonschema.Schema{Type: "object"},
+		Annotations: readOnlyAnnotations,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		view, serr := txGrants()
 		if serr != nil {
 			return errorResult(serr), nil, nil
 		}
