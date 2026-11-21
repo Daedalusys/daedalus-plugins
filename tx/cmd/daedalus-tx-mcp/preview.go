@@ -30,14 +30,45 @@ const (
 // 首字符排除 '-' —— 前导中划线会被 systemctl 当选项解析(argv 注入面在源头即不存在)。
 var unitNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$`)
 
-// desiredStateVerbs 是 v1 封闭动词集到 systemctl 动词的映射。
+// serviceVerbSpec 是 v1 封闭动词集的一行:期望状态与 systemctl 动词一一对应。
+type serviceVerbSpec struct {
+	desiredState string
+	verb         string
+}
+
+// serviceVerbSpecs 是 v1 封闭动词集到 systemctl 动词的映射,**唯一事实源**。
 // reload 被 service.set 适配器逐字拒绝,故不在表内;表外动作"不认识就不做"。
-var desiredStateVerbs = map[string]string{
-	"started":   "start",
-	"stopped":   "stop",
-	"restarted": "restart",
-	"enabled":   "enable",
-	"disabled":  "disable",
+//
+// 为什么只有一张表:批准指纹覆盖的是 argv,propose 覆盖的是两键(name +
+// desired_state)。两张表各改一处,批准就会静默覆盖另一个动作 —— 所以
+// 正反两个方向(期望状态→动词、动词→期望状态)都从这里派生。
+var serviceVerbSpecs = []serviceVerbSpec{
+	{desiredState: "started", verb: "start"},
+	{desiredState: "stopped", verb: "stop"},
+	{desiredState: "restarted", verb: "restart"},
+	{desiredState: "enabled", verb: "enable"},
+	{desiredState: "disabled", verb: "disable"},
+}
+
+// verbForDesiredState 把期望状态翻成 systemctl 动词;表外一律不认。
+func verbForDesiredState(desiredState string) (string, bool) {
+	for _, spec := range serviceVerbSpecs {
+		if spec.desiredState == desiredState {
+			return spec.verb, true
+		}
+	}
+	return "", false
+}
+
+// desiredStateForVerb 把 systemctl 动词翻回期望状态。执行侧从"被批准的 argv"
+// 反解意图时走这条路,与 verbForDesiredState 互为逆运算。
+func desiredStateForVerb(verb string) (string, bool) {
+	for _, spec := range serviceVerbSpecs {
+		if spec.verb == verb {
+			return spec.desiredState, true
+		}
+	}
+	return "", false
 }
 
 type previewIn struct {
@@ -90,7 +121,7 @@ func preparePreview(in previewIn) (unit string, serr *structuredError) {
 			Detail: fmt.Sprintf("v1 只接 kind=service,收到 %q", in.Kind),
 		}
 	}
-	if _, ok := desiredStateVerbs[in.DesiredState]; !ok {
+	if _, ok := verbForDesiredState(in.DesiredState); !ok {
 		return "", &structuredError{
 			Error:  "unsupported_desired_state",
 			Detail: fmt.Sprintf("v1 动词集为 started/stopped/restarted/enabled/disabled,收到 %q", in.DesiredState),
@@ -106,7 +137,7 @@ func preparePreview(in previewIn) (unit string, serr *structuredError) {
 // buildPreview 是纯判定:作用域与属性都由调用方给出。domain 是 Attributes.Domain
 // 的唯一赋值点 —— 必须显式传 user/system,零值会让所有对象静默降级到第三档。
 func buildPreview(desiredState, unit, domain string, cfg *autonomy.Config, obs observation) (previewView, *structuredError) {
-	verb, ok := desiredStateVerbs[desiredState]
+	verb, ok := verbForDesiredState(desiredState)
 	if !ok {
 		// 防御直调者:权威入参校验在 tools.go 的入参面,这里只保证判定函数自身
 		// 不会拿空动词组装出看起来可执行的 argv。
@@ -158,6 +189,34 @@ func systemctlArgv(domain, verb, unit string) []string {
 		return []string{"systemctl", "--user", verb, unit}
 	}
 	return []string{"systemctl", verb, unit}
+}
+
+// serviceSetIntent 是"被批准的 argv"反解出来的执行意图:单元名 + 期望状态。
+type serviceSetIntent struct {
+	unit         string
+	desiredState string
+}
+
+// serviceSetIntentFromArgv 从待执行的 argv 反解出 service.set 的两键。
+//
+// 这是"批准"与"执行"的结构性绑定点:人批准的是 argv,事务走的是两键,
+// 两者若各算各的,改一处就会批准另一个动作。这里只认 v1 的用户域形态
+// (systemctl --user <verb> <unit>),反解不出就返回 false —— 调用方必须
+// fail-closed,绝不退回请求里的 desired_state。
+func serviceSetIntentFromArgv(argv []string) (serviceSetIntent, bool) {
+	if len(argv) != 4 || argv[0] != "systemctl" || argv[1] != "--user" {
+		return serviceSetIntent{}, false
+	}
+	desiredState, ok := desiredStateForVerb(argv[2])
+	if !ok {
+		return serviceSetIntent{}, false
+	}
+	// 单元名再过一遍名称门:argv 是待批准的文本,不是可信输入。
+	unit, err := normalizeUnitName(argv[3])
+	if err != nil {
+		return serviceSetIntent{}, false
+	}
+	return serviceSetIntent{unit: unit, desiredState: desiredState}, true
 }
 
 // normalizeUnitName 是单元名门:只接受 .service 结尾的名字,原样回显。

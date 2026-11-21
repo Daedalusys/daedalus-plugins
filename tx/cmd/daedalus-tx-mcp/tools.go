@@ -87,7 +87,11 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 			"人批准同一份 argv 后再调用才执行。\n\n" +
 			"幂等:期望状态已在位 ⇒ outcome=noop,不建事务。\n" +
 			"注意:同一台机器只应运行一个 daedalus-tx-mcp 实例 —— 条子单次性靠进程内\n" +
-			"计数与互斥锁兜住,多实例并发会各记各的账。\n\n" +
+			"计数与互斥锁兜住,多实例并发会各记各的账。\n" +
+			"条子的 max_uses 是速率限制,不是安全边界 —— 能写用量账本的用户可以少记。\n" +
+			"真正的边界是作用域 + 条子 TTL + 签发者上限。\n" +
+			"人批准同样有新鲜度:approved_at + 批准窗口(默认 1 小时)之内才有效,\n" +
+			"过期返回 approval_stale,必须重新申请、重新批准。窗口内允许同一意图重复执行。\n\n" +
 			"参数:\n    kind: 对象类型,本阶段只接 service。\n" +
 			"    name: systemd 用户域单元名,必须以 .service 结尾(不做隐式补后缀)。\n" +
 			"    desired_state: started/stopped/restarted/enabled/disabled。\n" +
@@ -97,7 +101,8 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 			"返回(拒绝):{error,tier,required_scope?,pending_id?,argv?,argv_sha256?,reason,detail?} —— " +
 			"error 是机器可读码:grant_required/grant_expired/grant_exhausted/grant_scope_mismatch/" +
 			"grant_revoked/grant_unauthorized/grant_invalid/grant_usage_failed/" +
-			"human_approval_required/approval_untrusted/approval_mismatch/pending_write_failed/tx_failed。",
+			"human_approval_required/approval_untrusted/approval_mismatch/approval_stale/" +
+			"pending_write_failed/tx_failed。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
