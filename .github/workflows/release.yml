@@ -37,7 +37,7 @@ permissions:
 env:
   CAPS: "fs shell pkg sysinfo service blueprint dupe diskclean organize trace proc osstate snapshot tx"
   # 14 个 cap 共同 require 的 SDK 版本(唯一事实源);checkout 与校验都读它。
-  SDK_VERSION: "0.2.0"
+  SDK_VERSION: "0.3.0"
   # 打包器钉 core 的**具体 commit**(不钉分支/不钉 tag):它决定 zip 内的 manifest
   # 规范化与逐条目 checksums,浮动它会让同一 tag 的 zip 字节不可复现。
   # 抬它 = 改这一行 + 重新发版(刻意的一次跨仓变更)。
