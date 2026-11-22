@@ -172,7 +172,8 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "tx_pending",
-		Description: "列出等人批准的动作(只读,绝不写待办目录):每条含将执行的 argv 与 argv_sha256," +
+		Description: "列出等人批准的动作(只读,绝不写待办目录):只列当前执行者自己发起的待办 ——\n" +
+			"别人的待办落在各自的 0700 目录里,这里看不到也不该看到。每条含将执行的 argv 与 argv_sha256," +
 			"人把指纹抄给 daedalus-tx approve --expect-sha256 才算批准了同一份命令。\n\n" +
 			"返回:{items:[{id,kind,name,desired_state,scope,argv[],argv_sha256,reason,created_at,expires_at}]}。",
 		InputSchema: &jsonschema.Schema{Type: "object"},

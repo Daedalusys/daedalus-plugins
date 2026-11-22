@@ -103,7 +103,13 @@ func writeJournal(t *testing.T, dir, id, status, createdAt string, steps []any) 
 // 落点是执行者自己的待办目录(磁盘上按 uid 分目录),不是待办根目录。
 func writePendingFixture(t *testing.T, root, id string, argv []string) string {
 	t.Helper()
-	dir := userPendingDir(root)
+	return writePendingAt(t, userPendingDir(root), id, argv)
+}
+
+// writePendingAt 把待办写进指定目录:跨用户用例要往"别人的目录"里放一份,
+// 用来证明读侧只列自己的那一份。
+func writePendingAt(t *testing.T, dir, id string, argv []string) string {
+	t.Helper()
 	doc := pending.Pending{
 		ID:           id,
 		Kind:         kindService,
@@ -293,6 +299,31 @@ func TestTxPendingMissingDirIsEmpty(t *testing.T) {
 	}
 	if len(view.Items) != 0 {
 		t.Fatalf("items = %+v", view.Items)
+	}
+}
+
+// tx_pending 只列执行者自己那份待办目录:别人的待办落在 <根>/<别人的 uid>/,
+// 这里既不该看见、也不该因为读不到别人的目录而报错。
+func TestTxPendingOnlyOwnRequests(t *testing.T) {
+	f := newReadFixture(t, obsEnabledRunning, "")
+	ownArgv := []string{"systemctl", "--user", "restart", "demo.service"}
+	otherArgv := []string{"systemctl", "--user", "restart", "other.service"}
+	writePendingFixture(t, f.pending, "p-0123456789abcdef", ownArgv)
+	writePendingAt(t, filepath.Join(f.pending, uidDirName(executorUID+1)), "p-fedcba9876543210", otherArgv)
+
+	view, serr := txPending()
+	if serr != nil {
+		t.Fatalf("期望成功, 收到 %+v", serr)
+	}
+	if len(view.Items) != 1 {
+		t.Fatalf("items = %d, 期望 1(只列自己的): %+v", len(view.Items), view.Items)
+	}
+	item := view.Items[0]
+	if item.ID != "p-0123456789abcdef" {
+		t.Fatalf("列到了别人的待办: %+v", item)
+	}
+	if !reflect.DeepEqual(item.Argv, ownArgv) {
+		t.Fatalf("argv = %v, 期望 %v", item.Argv, ownArgv)
 	}
 }
 
