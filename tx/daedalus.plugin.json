@@ -26,7 +26,8 @@
       "/opt/daedalus/shared"
     ],
     "write": [
-      "/run/daedalus/pending"
+      "/run/daedalus/pending",
+      "/run/daedalus/consumed"
     ],
     "run": [
       "/usr/local/bin/daedalus-tx"
