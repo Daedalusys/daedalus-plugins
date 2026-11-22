@@ -3,7 +3,7 @@ module github.com/Daedalusys/daedalus-plugins/fs
 go 1.26.0
 
 require (
-	github.com/Daedalusys/daedalus-sdk v0.3.0
+	github.com/Daedalusys/daedalus-sdk v0.4.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
