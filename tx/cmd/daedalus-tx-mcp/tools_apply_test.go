@@ -61,6 +61,7 @@ type applyFixture struct {
 	grantsDir string
 	pending   string
 	approvals string
+	consumed  string
 	auditLog  string
 }
 
@@ -75,18 +76,30 @@ func newApplyFixture(t *testing.T, observeJSON string) applyFixture {
 		grantsDir: filepath.Join(root, "grants"),
 		pending:   filepath.Join(root, "pending"),
 		approvals: filepath.Join(root, "approvals"),
+		consumed:  filepath.Join(root, "consumed"),
 		auditLog:  filepath.Join(root, "audit.jsonl"),
 	}
 	t.Setenv("DAEDALUS_TX_DIR", f.txDir)
 	t.Setenv("DAEDALUS_GRANTS_DIR", f.grantsDir)
 	t.Setenv("DAEDALUS_PENDING_DIR", f.pending)
 	t.Setenv("DAEDALUS_APPROVALS_DIR", f.approvals)
+	t.Setenv("DAEDALUS_CONSUMED_DIR", f.consumed)
 	t.Setenv(audit.EnvLogPath, f.auditLog)
 	t.Setenv("FAKE_OBSERVE_JSON", observeJSON)
 	t.Setenv("TX_CALL_LOG", f.calls)
 	installFakeTxScript(t, applyFakeCLI)
 	if err := os.MkdirAll(f.grantsDir, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	// 待办与消费标记的根目录在生产由 systemd-tmpfiles 以 1777 建好:夹具按同一
+	// 形状铺好,插件自己只建 <根>/<uid> 那层。
+	for _, dir := range []string{f.pending, f.consumed} {
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// 用量折叠是进程级状态:每个用例从空账本开始,否则前一个用例的消费会漏进来。
 	grantUsage = newUsageLedger()
@@ -155,11 +168,13 @@ func writeApproval(t *testing.T, dir, id, argvSHA, approvedBy string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rec := map[string]string{
+	rec := map[string]any{
 		"id":          id,
 		"argv_sha256": argvSHA,
-		"approved_by": approvedBy,
-		"approved_at": time.Now().UTC().Format(time.RFC3339),
+		// 请求者权威 = 待办文件的 stat 属主;测试进程写待办,所以请求者就是自己。
+		"requested_by_uid": executorUID,
+		"approved_by":      approvedBy,
+		"approved_at":      time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -636,7 +651,7 @@ func TestTxApplyHumanTierWritesPending(t *testing.T) {
 		t.Fatalf("argv_sha256 = %q, 期望 %q", rej.ArgvSHA256, testArgvSHA256(rej.Argv))
 	}
 
-	data, err := os.ReadFile(filepath.Join(f.pending, rej.PendingID+".json"))
+	data, err := os.ReadFile(filepath.Join(userPendingDir(f.pending), rej.PendingID+".json"))
 	if err != nil {
 		t.Fatalf("待办未落盘: %v", err)
 	}
@@ -850,10 +865,10 @@ func callToolText(t *testing.T, session *mcp.ClientSession, name string, args ma
 	return toolText{text: text.Text, IsError: res.IsError}
 }
 
-// requireNoPending 断言没有新待办:批准不可信时不能退化成"重新申请"。
-func requireNoPending(t *testing.T, dir string) {
+// requireNoPending 断言执行者名下没有新待办:批准不可信时不能退化成"重新申请"。
+func requireNoPending(t *testing.T, root string) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(userPendingDir(root))
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
@@ -922,8 +937,8 @@ func TestTxApplyRejectsSymlinkedApprovalRecord(t *testing.T) {
 	}
 	argv := []string{"systemctl", "--user", "start", "demo.service"}
 	realPath := filepath.Join(t.TempDir(), "approval.json")
-	rec := fmt.Sprintf(`{"id":%q,"argv_sha256":%q,"approved_by":"root","approved_at":%q}`,
-		rej.PendingID, testArgvSHA256(argv), time.Now().UTC().Format(time.RFC3339))
+	rec := fmt.Sprintf(`{"id":%q,"argv_sha256":%q,"requested_by_uid":%d,"approved_by":"root","approved_at":%q}`,
+		rej.PendingID, testArgvSHA256(argv), executorUID, time.Now().UTC().Format(time.RFC3339))
 	if err := os.WriteFile(realPath, []byte(rec), 0o644); err != nil {
 		t.Fatal(err)
 	}

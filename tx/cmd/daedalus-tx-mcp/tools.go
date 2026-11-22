@@ -91,7 +91,10 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 			"条子的 max_uses 是速率限制,不是安全边界 —— 能写用量账本的用户可以少记。\n" +
 			"真正的边界是作用域 + 条子 TTL + 签发者上限。\n" +
 			"人批准同样有新鲜度:approved_at + 批准窗口(默认 1 小时)之内才有效,\n" +
-			"过期返回 approval_stale,必须重新申请、重新批准。窗口内允许同一意图重复执行。\n\n" +
+			"过期返回 approval_stale,必须重新申请、重新批准。\n" +
+			"批准还是一次性的:用掉之后这份批准就作废(执行失败也一样,失败要人重新批),\n" +
+			"再用会返回 approval_consumed。批准记录里带着请求者,只对申请这条待办的那位执行者\n" +
+			"生效;别人拿着它不是批给你的(approval_for_other_user)。\n\n" +
 			"参数:\n    kind: 对象类型,本阶段只接 service。\n" +
 			"    name: systemd 用户域单元名,必须以 .service 结尾(不做隐式补后缀)。\n" +
 			"    desired_state: started/stopped/restarted/enabled/disabled。\n" +
@@ -102,7 +105,7 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 			"error 是机器可读码:grant_required/grant_for_other_user/grant_expired/grant_exhausted/" +
 			"grant_scope_mismatch/grant_revoked/grant_unauthorized/grant_invalid/grant_usage_failed/" +
 			"human_approval_required/approval_untrusted/approval_mismatch/approval_stale/" +
-			"pending_write_failed/tx_failed。\n" +
+			"approval_for_other_user/approval_consumed/pending_write_failed/tx_failed。\n" +
 			"available_grants 是「你手上其实能用哪些条子」:grant_required 与 grant_for_other_user\n" +
 			"会回带它,不必再猜该传哪个 id。",
 		InputSchema: &jsonschema.Schema{
@@ -169,7 +172,8 @@ func newServer(cfg *autonomy.Config) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "tx_pending",
-		Description: "列出等人批准的动作(只读,绝不写待办目录):每条含将执行的 argv 与 argv_sha256," +
+		Description: "列出等人批准的动作(只读,绝不写待办目录):只列当前执行者自己发起的待办 ——\n" +
+			"别人的待办落在各自的 0700 目录里,这里看不到也不该看到。每条含将执行的 argv 与 argv_sha256," +
 			"人把指纹抄给 daedalus-tx approve --expect-sha256 才算批准了同一份命令。\n\n" +
 			"返回:{items:[{id,kind,name,desired_state,scope,argv[],argv_sha256,reason,created_at,expires_at}]}。",
 		InputSchema: &jsonschema.Schema{Type: "object"},
