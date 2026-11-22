@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -38,8 +39,13 @@ const (
 	codeApprovalUntrusted  = "approval_untrusted"
 	codeApprovalMismatch   = "approval_mismatch"
 	codeApprovalStale      = "approval_stale"
-	codePendingWriteFailed = "pending_write_failed"
-	codeTxFailed           = "tx_failed"
+	// codeApprovalForOtherUser 与 codeApprovalConsumed 是两条独立的拒绝前提:
+	// 前者是"批的不是你的请求",后者是"这份批准已经用掉了"。混成一个码,
+	// 客户端就分不出"该找谁批"和"该重新批"。
+	codeApprovalForOtherUser = "approval_for_other_user"
+	codeApprovalConsumed     = "approval_consumed"
+	codePendingWriteFailed   = "pending_write_failed"
+	codeTxFailed             = "tx_failed"
 )
 
 // applyIn 是 tx_apply 的入参。GrantID 只在第二档有意义;Actor 是客户端自报身份,
@@ -261,8 +267,37 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 			Reason: "批准已过新鲜度窗口,拒绝执行",
 			Detail: shortErrText(err),
 		})
+	case approvalForOtherUser:
+		// 批准记录在,但批的不是本人这份请求:不许执行,也不许退化成"重新出待办"
+		// —— 那会把"别人被批了"这件事悄悄变成"你还没申请"。
+		return deny(args, &applyRejection{
+			Error:  codeApprovalForOtherUser,
+			Tier:   view.Tier,
+			Reason: "这份批准不是批给你的,拒绝执行",
+			Detail: shortErrText(err),
+		})
 	case approvalTrusted:
 		args["approved_by"] = approval.ApprovedBy
+		// 占住即烧掉:标记落盘之后这份批准就不再可用。故意不做"执行失败就释放"
+		// 的补偿 —— 释放等于把"一次性"退回"窗口内无限次",而人批的是这一件事
+		// 这一次;失败要人重新批。
+		if err := claimApproval(pendingID); err != nil {
+			if errors.Is(err, errApprovalConsumed) {
+				return deny(args, &applyRejection{
+					Error:  codeApprovalConsumed,
+					Tier:   view.Tier,
+					Reason: "这份批准已经用过了,需要人重新批准",
+					Detail: shortErrText(err),
+				})
+			}
+			// 占不住(消费目录不可用)⇒ 一次性无法保证,只能拒绝执行。
+			return deny(args, &applyRejection{
+				Error:  codeTxFailed,
+				Tier:   view.Tier,
+				Reason: "无法标记这份批准为已消费,拒绝执行",
+				Detail: shortErrText(err),
+			})
+		}
 		result, rej := runTransaction(view, args)
 		if rej == nil {
 			result.PendingID = pendingID

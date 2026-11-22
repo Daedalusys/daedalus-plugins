@@ -61,6 +61,7 @@ type applyFixture struct {
 	grantsDir string
 	pending   string
 	approvals string
+	consumed  string
 	auditLog  string
 }
 
@@ -75,12 +76,14 @@ func newApplyFixture(t *testing.T, observeJSON string) applyFixture {
 		grantsDir: filepath.Join(root, "grants"),
 		pending:   filepath.Join(root, "pending"),
 		approvals: filepath.Join(root, "approvals"),
+		consumed:  filepath.Join(root, "consumed"),
 		auditLog:  filepath.Join(root, "audit.jsonl"),
 	}
 	t.Setenv("DAEDALUS_TX_DIR", f.txDir)
 	t.Setenv("DAEDALUS_GRANTS_DIR", f.grantsDir)
 	t.Setenv("DAEDALUS_PENDING_DIR", f.pending)
 	t.Setenv("DAEDALUS_APPROVALS_DIR", f.approvals)
+	t.Setenv("DAEDALUS_CONSUMED_DIR", f.consumed)
 	t.Setenv(audit.EnvLogPath, f.auditLog)
 	t.Setenv("FAKE_OBSERVE_JSON", observeJSON)
 	t.Setenv("TX_CALL_LOG", f.calls)
@@ -88,13 +91,15 @@ func newApplyFixture(t *testing.T, observeJSON string) applyFixture {
 	if err := os.MkdirAll(f.grantsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// 待办根目录在生产由 systemd-tmpfiles 以 1777 建好:夹具按同一形状铺好,
-	// 插件自己只建 <根>/<uid> 那层。
-	if err := os.MkdirAll(f.pending, 0o777); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(f.pending, os.ModeSticky|0o777); err != nil {
-		t.Fatal(err)
+	// 待办与消费标记的根目录在生产由 systemd-tmpfiles 以 1777 建好:夹具按同一
+	// 形状铺好,插件自己只建 <根>/<uid> 那层。
+	for _, dir := range []string{f.pending, f.consumed} {
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// 用量折叠是进程级状态:每个用例从空账本开始,否则前一个用例的消费会漏进来。
 	grantUsage = newUsageLedger()
@@ -860,10 +865,10 @@ func callToolText(t *testing.T, session *mcp.ClientSession, name string, args ma
 	return toolText{text: text.Text, IsError: res.IsError}
 }
 
-// requireNoPending 断言没有新待办:批准不可信时不能退化成"重新申请"。
-func requireNoPending(t *testing.T, dir string) {
+// requireNoPending 断言执行者名下没有新待办:批准不可信时不能退化成"重新申请"。
+func requireNoPending(t *testing.T, root string) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(userPendingDir(root))
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}

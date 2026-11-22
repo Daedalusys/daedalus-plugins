@@ -38,10 +38,15 @@ const (
 	defaultPendingDir = "/run/daedalus/pending"
 	// defaultApprovalsDir 是批准记录的生产位置:只有 root 能写。
 	defaultApprovalsDir = "/run/daedalus/approvals"
-	// envPendingDir / envApprovalsDir 覆盖目录(测试隔离用);空值视为未设置。
-	// envPendingDir 指的是**根目录**,不是某个用户的待办目录。
+	// defaultConsumedDir 是消费标记的父目录:1777 由 systemd-tmpfiles 建,
+	// 每个执行者在里面建自己的 <uid> 子目录。
+	defaultConsumedDir = "/run/daedalus/consumed"
+	// envPendingDir / envApprovalsDir / envConsumedDir 覆盖目录(测试隔离用);
+	// 空值视为未设置。envPendingDir 与 envConsumedDir 指的是**根目录**,
+	// 不是某个用户的子目录。
 	envPendingDir   = "DAEDALUS_PENDING_DIR"
 	envApprovalsDir = "DAEDALUS_APPROVALS_DIR"
+	envConsumedDir  = "DAEDALUS_CONSUMED_DIR"
 	// envApprovalTTL 覆盖批准新鲜度窗口(测试与运维调参用);空值视为未设置。
 	envApprovalTTL = "DAEDALUS_APPROVAL_TTL"
 	// maxApprovalFileBytes 给批准记录设上限:目录虽由 root 写,读侧不该按文件
@@ -63,7 +68,7 @@ const approvalTTL = pendingTTL
 var approvalDirOwnerUID = uint32(0)
 
 // approvalStatus 把"读批准记录"的结论分开:没有、可信、不可信、指纹不符、
-// 已过期。后三者都必须拒绝执行,但给客户端的理由不同。
+// 已过期、批给了别人。后四者都必须拒绝执行,但给客户端的理由不同。
 type approvalStatus int
 
 const (
@@ -72,7 +77,12 @@ const (
 	approvalUntrusted
 	approvalMismatched
 	approvalStale
+	approvalForOtherUser
 )
+
+// errApprovalConsumed 是"这份批准已经被占过"的哨兵:重放与"占不住"必须能分开,
+// 前者是正常拒绝,后者是环境坏了。
+var errApprovalConsumed = errors.New("这份批准已经用过了")
 
 // pendingRoot 是待办根目录:用户子目录由 pendingDirFor 拼出。
 func pendingRoot() string {
@@ -96,6 +106,43 @@ func approvalsDir() string {
 	return defaultApprovalsDir
 }
 
+// consumedRoot 是消费标记的父目录:子目录由 consumedDirFor 拼出。
+func consumedRoot() string {
+	if v := os.Getenv(envConsumedDir); v != "" {
+		return v
+	}
+	return defaultConsumedDir
+}
+
+// consumedDirFor 是某个执行者的消费标记目录。
+// 标记只拦得住意外重放(标记归自己所有,自己就能截断),所以它和待办一样
+// 按人分目录:别人的标记不该影响本人能不能用掉自己的批准。
+func consumedDirFor(uid uint32) string {
+	return filepath.Join(consumedRoot(), strconv.FormatUint(uint64(uid), 10))
+}
+
+// claimApproval 占住一份批准:O_EXCL 建标记,天然原子,第二次占必然失败。
+//
+// 标记归执行者自己所有,可以自己截断 ⇒ 挡得住意外重放(循环、重试、重复提交),
+// 挡不住恶意重放。这与条子的 max_uses 同性质:速率限制,不是安全边界。
+func claimApproval(id string) error {
+	if err := pending.ValidateID(id); err != nil {
+		return fmt.Errorf("拒绝为 %q 建消费标记: %v", id, err)
+	}
+	dir := consumedDirFor(executorUID)
+	if err := ensureUserDir(dir, executorUID); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, id), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%w(待办 %s 的批准)", errApprovalConsumed, id)
+		}
+		return fmt.Errorf("占住批准 %s 失败: %v", id, err)
+	}
+	return f.Close()
+}
+
 // ensureUserDir 确认 <根>/<uid> 这个目录归本人,不存在就按 0700 建出来。
 //
 // 属主不是本人时只能拒绝:别人拥有的目录,别人随时能往里塞文件、删文件,
@@ -106,10 +153,12 @@ func ensureUserDir(path string, uid uint32) error {
 	fi, err := os.Lstat(path)
 	created := false
 	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(path, 0o700); err != nil {
-			return fmt.Errorf("创建目录 %s 失败: %v", path, err)
+		// 并发下后到者会撞 EEXIST:那不是失败,目录已经在了,照常往下核对属主。
+		if mkErr := os.Mkdir(path, 0o700); mkErr == nil {
+			created = true
+		} else if !errors.Is(mkErr, os.ErrExist) {
+			return fmt.Errorf("创建目录 %s 失败: %v", path, mkErr)
 		}
-		created = true
 		if fi, err = os.Lstat(path); err != nil {
 			return fmt.Errorf("读取目录 %s 失败: %v", path, err)
 		}
@@ -234,6 +283,19 @@ func loadApproval(id string, argv []string, now time.Time) (approvalStatus, pend
 	doc, err := pending.ParseApproval(data)
 	if err != nil {
 		return approvalUntrusted, pending.Approval{}, fmt.Errorf("批准记录 %s 无法解析: %v", path, err)
+	}
+	// 请求者核对:这份批准批的必须是本人的请求。id 里带执行者只是"碰巧落不到
+	// 别人头上",这里才是显式判定 —— 少了它,别人在同一个 id 上放的待办被批之后,
+	// 本人指纹对得上就执行了,批准成了一条无主的 argv。
+	// uid 0 是 root 本人,不是"未指定";解析期已把缺失当坏文件拒掉。
+	if doc.RequestedByUID == nil {
+		return approvalForOtherUser, pending.Approval{}, fmt.Errorf(
+			"批准记录 %s 没有记录请求者(缺失不等于 root),拒绝执行", path)
+	}
+	if *doc.RequestedByUID != executorUID {
+		return approvalForOtherUser, pending.Approval{}, fmt.Errorf(
+			"批准记录 %s 批的是 %q(uid=%d)的请求,不是你的(uid=%d),拒绝执行",
+			path, doc.RequestedBy, *doc.RequestedByUID, executorUID)
 	}
 	if doc.ID != id {
 		return approvalUntrusted, pending.Approval{}, fmt.Errorf("批准记录 %s 的内容 id=%q 与文件名不符", path, doc.ID)
