@@ -14,11 +14,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Daedalusys/daedalus-sdk/audit"
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
+	"github.com/Daedalusys/daedalus-sdk/pending"
 )
 
 // readFakeCLI 只回放读面与回滚:status 由 FAKE_STATUS_JSON 注入,service-observe
@@ -98,9 +100,11 @@ func writeJournal(t *testing.T, dir, id, status, createdAt string, steps []any) 
 }
 
 // writePendingFixture 落一份待办,形状与 daedalus-tx approve 的线上契约一致。
-func writePendingFixture(t *testing.T, dir, id string, argv []string) string {
+// 落点是执行者自己的待办目录(磁盘上按 uid 分目录),不是待办根目录。
+func writePendingFixture(t *testing.T, root, id string, argv []string) string {
 	t.Helper()
-	doc := pendingDoc{
+	dir := userPendingDir(root)
+	doc := pending.Pending{
 		ID:           id,
 		Kind:         kindService,
 		Name:         "demo.service",
@@ -108,14 +112,14 @@ func writePendingFixture(t *testing.T, dir, id string, argv []string) string {
 		Argv:         argv,
 		Scope:        "systemd:user:restart:demo.service",
 		Reason:       "tier=human (deny)",
-		CreatedAt:    "2026-11-20T10:00:00Z",
-		ExpiresAt:    "2026-11-20T11:00:00Z",
+		CreatedAt:    time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC),
+		ExpiresAt:    time.Date(2026, 11, 20, 11, 0, 0, 0, time.UTC),
 	}
 	data, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, id+".json")
@@ -237,11 +241,11 @@ func TestTxPendingListsOnlyPendingFiles(t *testing.T) {
 	f := newReadFixture(t, obsEnabledRunning, "")
 	argv := []string{"systemctl", "--user", "restart", "demo.service"}
 	writePendingFixture(t, f.pending, "p-0123456789abcdef", argv)
-	if err := os.WriteFile(filepath.Join(f.pending, "notes.txt"), []byte("ignore"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(userPendingDir(f.pending), "notes.txt"), []byte("ignore"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	before, err := os.ReadDir(f.pending)
+	before, err := os.ReadDir(userPendingDir(f.pending))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +274,7 @@ func TestTxPendingListsOnlyPendingFiles(t *testing.T) {
 		t.Fatalf("待办字段不全: %+v", item)
 	}
 
-	after, err := os.ReadDir(f.pending)
+	after, err := os.ReadDir(userPendingDir(f.pending))
 	if err != nil {
 		t.Fatal(err)
 	}

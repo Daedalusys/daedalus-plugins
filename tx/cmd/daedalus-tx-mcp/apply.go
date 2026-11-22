@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
+	"github.com/Daedalusys/daedalus-sdk/pending"
 )
 
 const (
@@ -231,7 +232,7 @@ func runWithGrant(cfg *autonomy.Config, in applyIn, view previewView, args map[s
 
 // runHuman 走第三档:条子不构成许可;只出待办,等人批准同一份 argv。
 func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *applyRejection) {
-	pendingID := pendingIDFor(in.Kind, view.Name, view.DesiredState, view.Scope, executorUID)
+	pendingID := pending.DeriveID(in.Kind, view.Name, view.DesiredState, view.Scope, executorUID)
 	args["pending_id"] = pendingID
 
 	status, approval, err := loadApproval(pendingID, view.Argv, time.Now())
@@ -271,7 +272,8 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 	}
 
 	// 没有批准记录 ⇒ 新出一份待办(同 id 覆盖,刷新有效期)。
-	if err := writePending(pendingDoc{
+	now := time.Now()
+	if err := writePending(pending.Pending{
 		ID:           pendingID,
 		Kind:         in.Kind,
 		Name:         view.Name,
@@ -279,8 +281,8 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 		Argv:         view.Argv,
 		Scope:        view.Scope,
 		Reason:       "tier=human (" + view.Reason + ")",
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-		ExpiresAt:    time.Now().UTC().Add(pendingTTL).Format(time.RFC3339),
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(pendingTTL),
 	}); err != nil {
 		return deny(args, &applyRejection{
 			Error:  codePendingWriteFailed,
@@ -296,10 +298,10 @@ func runHuman(in applyIn, view previewView, args map[string]any) (applyView, *ap
 		Tier:       view.Tier,
 		PendingID:  pendingID,
 		Argv:       view.Argv,
-		ArgvSHA256: argvSHA256(view.Argv),
+		ArgvSHA256: pending.ArgvSHA256(view.Argv),
 		Reason:     "需要人批准",
 		Detail: fmt.Sprintf("待办 %s 已生成;人执行 daedalus-tx approve %s --expect-sha256 %s 后重新调用本工具",
-			pendingID, pendingID, argvSHA256(view.Argv)),
+			pendingID, pendingID, pending.ArgvSHA256(view.Argv)),
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Daedalusys/daedalus-sdk/autonomy"
 	"github.com/Daedalusys/daedalus-sdk/grant"
+	"github.com/Daedalusys/daedalus-sdk/pending"
 )
 
 // swapExecutor 临时把执行者 uid 换成另一个身份;用例结束恢复。
@@ -87,8 +88,8 @@ func TestUsageLedgerNamedByExecutor(t *testing.T) {
 // 同一意图 + 两个不同执行者 ⇒ 两个不同待办 id:否则 root 批一份,两个人的
 // 助手都能拿去用。
 func TestPendingIDDiffersPerExecutor(t *testing.T) {
-	a := pendingIDFor("service", "demo.service", "restarted", "systemd:user:restart:demo.service", 1000)
-	b := pendingIDFor("service", "demo.service", "restarted", "systemd:user:restart:demo.service", 1001)
+	a := pending.DeriveID("service", "demo.service", "restarted", "systemd:user:restart:demo.service", 1000)
+	b := pending.DeriveID("service", "demo.service", "restarted", "systemd:user:restart:demo.service", 1001)
 	if a == b {
 		t.Fatalf("不同执行者撞了同一个待办 id: %s", a)
 	}
@@ -98,8 +99,8 @@ func TestPendingIDDiffersPerExecutor(t *testing.T) {
 // 人批准过的那一条。
 func TestPendingIDStablePerExecutor(t *testing.T) {
 	args := []string{"service", "demo.service", "restarted", "systemd:user:restart:demo.service"}
-	first := pendingIDFor(args[0], args[1], args[2], args[3], 1000)
-	second := pendingIDFor(args[0], args[1], args[2], args[3], 1000)
+	first := pending.DeriveID(args[0], args[1], args[2], args[3], 1000)
+	second := pending.DeriveID(args[0], args[1], args[2], args[3], 1000)
 	if first != second {
 		t.Fatalf("同一意图 + 同一执行者 id 不稳定: %s != %s", first, second)
 	}

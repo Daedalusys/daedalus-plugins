@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Daedalusys/daedalus-sdk/dirs"
+	"github.com/Daedalusys/daedalus-sdk/pending"
 )
 
 const (
@@ -259,10 +260,11 @@ func loadJournalItem(path, id string) (listItem, error) {
 	return listItem{TxID: doc.ID, State: doc.Status, CreatedAt: doc.CreatedAt}, nil
 }
 
-// txPending 只列待办 *.json,并按线上契约原样透出字段(argv 是指纹的来源,
-// 空 argv 的待办无法被人核对,按损坏处理)。全程零写入。
+// txPending 只列执行者自己那份待办目录里的 *.json:待办按人分目录(0700),
+// 别人的待办在这里既读不到也不该读。并按线上契约原样透出字段(argv 是指纹的
+// 来源,空 argv 的待办无法被人核对,按损坏处理)。全程零写入。
 func txPending() (pendingView, *structuredError) {
-	dir := pendingDir()
+	dir := pendingDirFor(executorUID)
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		// 全新机器还没出过待办:空列表,不是错误。
@@ -308,7 +310,8 @@ func txPending() (pendingView, *structuredError) {
 }
 
 // loadPendingItem 读一份待办并复核形状。文件名即 id:内容与文件名对不上时
-// 无法判断人批准的是哪一条,只能按损坏处理(fail-closed)。
+// 无法判断人批准的是哪一条,只能按损坏处理(fail-closed)。解析走 SDK 的严格
+// 版本:待办目录对本人可写,宽松解析就是给伪造留门。
 func loadPendingItem(path, id string) (pendingItem, time.Time, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -329,22 +332,12 @@ func loadPendingItem(path, id string) (pendingItem, time.Time, error) {
 	if err != nil {
 		return pendingItem{}, time.Time{}, fmt.Errorf("读待办 %s 失败: %v", path, err)
 	}
-	var doc pendingDoc
-	if err := json.Unmarshal(data, &doc); err != nil {
+	doc, err := pending.ParsePending(data)
+	if err != nil {
 		return pendingItem{}, time.Time{}, fmt.Errorf("待办 %s 无法解析: %v", path, err)
 	}
 	if doc.ID != id {
 		return pendingItem{}, time.Time{}, fmt.Errorf("待办 %s 内容 id=%q 与文件名不一致", path, doc.ID)
-	}
-	if doc.Scope == "" || len(doc.Argv) == 0 {
-		return pendingItem{}, time.Time{}, fmt.Errorf("待办 %s 缺 scope 或 argv,人无法据此批准", path)
-	}
-	createdAt, err := time.Parse(time.RFC3339, doc.CreatedAt)
-	if err != nil {
-		return pendingItem{}, time.Time{}, fmt.Errorf("待办 %s 的 created_at 非法: %v", path, err)
-	}
-	if doc.ExpiresAt == "" {
-		return pendingItem{}, time.Time{}, fmt.Errorf("待办 %s 缺 expires_at", path)
 	}
 	return pendingItem{
 		ID:           doc.ID,
@@ -353,9 +346,9 @@ func loadPendingItem(path, id string) (pendingItem, time.Time, error) {
 		DesiredState: doc.DesiredState,
 		Scope:        doc.Scope,
 		Argv:         doc.Argv,
-		ArgvSHA256:   argvSHA256(doc.Argv),
+		ArgvSHA256:   pending.ArgvSHA256(doc.Argv),
 		Reason:       doc.Reason,
-		CreatedAt:    doc.CreatedAt,
-		ExpiresAt:    doc.ExpiresAt,
-	}, createdAt, nil
+		CreatedAt:    doc.CreatedAt.UTC().Format(time.RFC3339),
+		ExpiresAt:    doc.ExpiresAt.UTC().Format(time.RFC3339),
+	}, doc.CreatedAt, nil
 }

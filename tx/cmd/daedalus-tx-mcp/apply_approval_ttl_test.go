@@ -21,11 +21,13 @@ func writeApprovalAt(t *testing.T, dir, id, argvSHA, approvedBy string, approved
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rec := map[string]string{
+	rec := map[string]any{
 		"id":          id,
 		"argv_sha256": argvSHA,
-		"approved_by": approvedBy,
-		"approved_at": approvedAt.UTC().Format(time.RFC3339),
+		// 请求者权威 = 待办文件的 stat 属主;测试进程写待办,所以请求者就是自己。
+		"requested_by_uid": executorUID,
+		"approved_by":      approvedBy,
+		"approved_at":      approvedAt.UTC().Format(time.RFC3339),
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
