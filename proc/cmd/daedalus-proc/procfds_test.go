@@ -2,9 +2,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestClassifyFdLink(t *testing.T) {
@@ -107,5 +113,39 @@ func TestParseCgroup(t *testing.T) {
 	_, unit = parseCgroup("garbage\n0::\n")
 	if unit != "" {
 		t.Errorf("坏行应忽略,得 %q", unit)
+	}
+}
+
+// TestProcFds_DeniedPidReturnsPartialNotError 钉死权限降级形态:他人进程的
+// fd 目录不可读时,工具返回空 entries + denied 标记,而不是整体报错。
+func TestProcFds_DeniedPidReturnsPartialNotError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 不受目录权限约束,构造不出不可读的 /proc/<pid>/fd")
+	}
+	root := makeProcFixture(t)
+	fdDir := filepath.Join(root, "40", "fd")
+	if err := os.Chmod(fdDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(fdDir, 0o755) })
+	t.Setenv(EnvProcRoot, root)
+
+	res, outcome, cause := procFdsResult(context.Background(), procFdsIn{PID: 40})
+	if cause != nil || outcome != "success" || res.IsError {
+		t.Fatalf("权限不足不得整体失败: outcome=%q cause=%v res=%+v", outcome, cause, res)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("结果块非 TextContent: %T", res.Content[0])
+	}
+	var view procFdsView
+	if err := json.Unmarshal([]byte(tc.Text), &view); err != nil {
+		t.Fatalf("输出非 JSON: %v\n%s", err, tc.Text)
+	}
+	if !view.Denied || view.DeniedReason == "" {
+		t.Errorf("denied/denied_reason 缺失: %+v", view)
+	}
+	if view.Entries == nil || len(view.Entries) != 0 {
+		t.Errorf("entries 应为空数组而非 null: %s", tc.Text)
 	}
 }

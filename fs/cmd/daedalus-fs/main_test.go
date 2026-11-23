@@ -494,3 +494,71 @@ func TestAuditLog_SuccessAndDenied(t *testing.T) {
 		t.Errorf("audit.Verify = (%d, %v), want (2, nil)", n, err)
 	}
 }
+
+// useTestdataPolicy 把策略夹具注入包级状态,并在用例结束后还原白名单:
+// 夹具把白名单收缩为仅 /tmp,注入不还原会污染后续用例。
+func useTestdataPolicy(t *testing.T) {
+	t.Helper()
+	origDirs := slices.Clone(pathguard.AllowedDirs)
+	t.Cleanup(func() { pathguard.WithAllowedDirs(origDirs) })
+
+	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", "policy.toml"))
+	if err := applyPolicy(); err != nil {
+		t.Fatalf("applyPolicy 加载 testdata 策略失败: %v", err)
+	}
+}
+
+// TestReadFile_TruncatesAboveLimit 固定超限读取的截断契约:响应以机器可
+// 解析的截断头开头,头后是被截断的正文,正文长度恰为策略上限。
+func TestReadFile_TruncatesAboveLimit(t *testing.T) {
+	useTestdataPolicy(t)
+
+	session, ctx := connectSession(t)
+	base := mustTempDir(t)
+	file := filepath.Join(base, "big.txt")
+	content := strings.Repeat("x", 200)
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": file})
+	if res.IsError {
+		t.Fatalf("read_file 超限读取失败: %s", text)
+	}
+	header := "daedalus: truncated=true total_bytes=200 read_bytes=64\n"
+	if !strings.HasPrefix(text, header) {
+		t.Fatalf("截断头 = %q, want 前缀 %q", text, header)
+	}
+	body := strings.TrimPrefix(text, header)
+	if len(body) != 64 {
+		t.Errorf("正文长度 = %d, want 64", len(body))
+	}
+	if body != content[:64] {
+		t.Errorf("正文 = %q, want %q", body, content[:64])
+	}
+}
+
+// TestReadFile_UnderLimitIsByteIdentical 固定未截断时的逐字等价:返回值就是
+// 文件原文,且不带任何截断标记(既有调用方的读文件行为不得改变)。
+func TestReadFile_UnderLimitIsByteIdentical(t *testing.T) {
+	useTestdataPolicy(t)
+
+	session, ctx := connectSession(t)
+	base := mustTempDir(t)
+	file := filepath.Join(base, "small.txt")
+	content := "0123456789"
+	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, text := callToolText(t, session, ctx, "read_file", map[string]any{"path": file})
+	if res.IsError {
+		t.Fatalf("read_file 失败: %s", text)
+	}
+	if text != content {
+		t.Errorf("内容 = %q, want %q", text, content)
+	}
+	if strings.Contains(text, "truncated=") {
+		t.Errorf("未截断却带截断标记: %q", text)
+	}
+}

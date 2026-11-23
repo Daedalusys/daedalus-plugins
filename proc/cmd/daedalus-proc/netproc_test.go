@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -101,5 +102,95 @@ func TestResolveListen(t *testing.T) {
 	if _, err := resolveListen(filepath.Join(root, "missing"), "udp", 0); err == nil ||
 		!strings.Contains(err.Error(), "均不可读") {
 		t.Errorf("四类表缺失应报错,得 %v", err)
+	}
+}
+
+func TestPortTokenMatch(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--port", "18080"}, true},
+		{[]string{"--port=18080"}, true},
+		{[]string{"127.0.0.1:18080"}, true},
+		{[]string{":18080"}, true},
+		{[]string{"1180801"}, false},
+		{[]string{"--port=1180801"}, false},
+		{[]string{"/var/log/18080.log"}, false},
+		{[]string{"18080x"}, false},
+		{[]string{"--port=8080", "9090"}, false},
+	} {
+		if got := portTokenMatch(tc.args, 18080); got != tc.want {
+			t.Errorf("portTokenMatch(%q) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// makeListenHintFixture 生成最小 /proc 树:18080 的监听 socket 无 fd 归属
+// (inode 4242 不出现在任何 fd 链接里),另有两条可见 cmdline —— 60 号含裸
+// 子串 1180801,61 号含 --port=18080。
+func makeListenHintFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeProcFile(t, filepath.Join(root, "60", "cmdline"), "/usr/bin/decoy\x001180801\x00")
+	writeProcFile(t, filepath.Join(root, "60", "cgroup"), "0::/system.slice/decoy.service\n")
+	writeProcFile(t, filepath.Join(root, "61", "cmdline"),
+		"python3\x00-m\x00http.server\x00--port=18080\x00")
+	writeProcFile(t, filepath.Join(root, "61", "cgroup"), "0::/system.slice/probe.service\n")
+	writeProcFile(t, filepath.Join(root, "net", "tcp"),
+		"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
+			"   0: 00000000:46A0 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4242 1 0000000000000000 100 0 0 10 0\n")
+	return root
+}
+
+func TestListenSocket_CmdlineHint_MatchesTokenOnly(t *testing.T) {
+	root := makeListenHintFixture(t)
+	res, err := resolveListen(root, "tcp", 18080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("监听条目数 = %d, want 1: %+v", len(res.Entries), res)
+	}
+	e := res.Entries[0]
+	if e.Port != 18080 || len(e.PIDs) != 0 {
+		t.Fatalf("18080 应无 fd 归属: %+v", e)
+	}
+	if e.Attribution != "cmdline_hint" {
+		t.Errorf("attribution = %q, want cmdline_hint", e.Attribution)
+	}
+	for _, h := range e.Hints {
+		if h.PID == 60 {
+			t.Errorf("cmdline 含裸子串 1180801 的 pid 60 不得成为线索: %+v", h)
+		}
+	}
+	if len(e.Hints) != 1 || e.Hints[0].PID != 61 {
+		t.Fatalf("hints = %+v, want 仅 pid 61", e.Hints)
+	}
+	if h := e.Hints[0]; h.Match != "cmdline" || h.CgroupUnit != "probe.service" ||
+		!strings.Contains(h.Cmdline, "--port=18080") {
+		t.Errorf("hint 内容 = %+v", h)
+	}
+}
+
+func TestListenSocket_UnresolvedWhenNoHint(t *testing.T) {
+	root := makeListenHintFixture(t)
+	// 只留含 1180801 的诱饵进程,socket 仍无 fd 归属 → 无任何 token 命中。
+	if err := os.RemoveAll(filepath.Join(root, "61")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := resolveListen(root, "tcp", 18080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("监听条目数 = %d, want 1: %+v", len(res.Entries), res)
+	}
+	e := res.Entries[0]
+	if e.Attribution != "unresolved" {
+		t.Errorf("attribution = %q, want unresolved", e.Attribution)
+	}
+	if len(e.Hints) != 0 {
+		t.Errorf("无命中时 hints 应为空: %+v", e.Hints)
 	}
 }

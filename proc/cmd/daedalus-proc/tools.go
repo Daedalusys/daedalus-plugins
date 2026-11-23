@@ -53,7 +53,7 @@ func newServer() *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "proc_fds",
-		Description: "只读列出进程打开的文件描述符(kind=file/socket/pipe/other,target 为链接目标,pos 为 fdinfo 偏移)。\n\nsocket/pipe 显示 socket:[ino]/pipe:[ino] 形态;anon_inode 等归入 other。\n\n参数:\n    pid: 必填,正整数进程 PID。\n    kinds: 可选,取值子集 [file, socket, pipe, other];省略 = 全收。\n\n返回:\n    {proc_root, pid, kinds, entries[], total, unreadable}。",
+		Description: "只读列出进程打开的文件描述符(kind=file/socket/pipe/other,target 为链接目标,pos 为 fdinfo 偏移)。\n\nsocket/pipe 显示 socket:[ino]/pipe:[ino] 形态;anon_inode 等归入 other。读取他人进程的 fd 需 root:权限不足时返回空 entries + denied=true(denied_reason 给底层错误),不整体报错。\n\n参数:\n    pid: 必填,正整数进程 PID。\n    kinds: 可选,取值子集 [file, socket, pipe, other];省略 = 全收。\n\n返回:\n    {proc_root, pid, kinds, entries[], total, unreadable, denied, denied_reason}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -68,7 +68,7 @@ func newServer() *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "proc_listen",
-		Description: "只读列出监听端口并反查归属进程(直读 /proc/net/{tcp,tcp6,udp,udp6},零 exec 不用 ss/netstat)。\n\ntcp 取 LISTEN 态,udp 取远端全零的未连接绑定;inode→pid 反查受权限限制,反查不到列入 unowned_sockets。\n\n参数:\n    port: 可选,1-65535 端口过滤。\n    proto: 可选,tcp(缺省)或 udp。\n\n返回:\n    {proc_root, proto, port, listeners[{proto,local_address,local_port,state,inode,pids,names}], scanned_sockets, unowned_sockets}。",
+		Description: "只读列出监听端口并反查归属进程(直读 /proc/net/{tcp,tcp6,udp,udp6},零 exec 不用 ss/netstat)。\n\ntcp 取 LISTEN 态,udp 取远端全零的未连接绑定。归属分三态:fd_match = /proc/<pid>/fd 反查确定;fd 不可读时按可见进程 cmdline 的端口 token 命中给出 cmdline_hint(附 hints[] 的 pid/cmdline/cgroup_unit);两条证据都拿不到为 unresolved。端口只按独立 token 命中(裸端口号 / --port=N / :N),不做裸子串匹配。\n\n参数:\n    port: 可选,1-65535 端口过滤。\n    proto: 可选,tcp(缺省)或 udp。\n\n返回:\n    {proc_root, proto, port, listeners[{proto,local_address,local_port,state,inode,pids,names,attribution,hints[]}], scanned_sockets, unowned_sockets}。",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{

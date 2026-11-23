@@ -46,6 +46,9 @@ type serverConfig struct {
 	allow     map[string]struct{}
 	auditPath string
 	timeout   time.Duration
+	// maxOutputBytes 是 stdout / stderr 各自保留的最大字节数,由
+	// [shell].max_output_bytes 注入(策略校验保证 >0);超限部分丢弃并标记。
+	maxOutputBytes int64
 }
 
 // shellExecIn 对应 shell_server.ts 的 inputSchema:command 必填,args 可选。
@@ -54,13 +57,18 @@ type shellExecIn struct {
 	Args    []string `json:"args,omitempty" jsonschema:"List of command-line arguments to pass."`
 }
 
-// execResult 对应 ts ShellExecResult:字段顺序即 JSON 键顺序,与 JSON.stringify
-// 输出逐字一致;成功路径 error 键整体缺省(对应 ts 的 undefined 被省略)。
+// execResult 是 shell_exec 的 wire 回包:字段顺序即 JSON 键顺序,前四键维持
+// 既有调用方约定,outcome 与截断标记追加在尾部。outcome 是跨语言结局词表
+// (shellpolicy.Outcome* 四态):非零退出码不再等同于 MCP error,而由它区分
+// "跑完但失败"与"被拒/超时";error 键仅在拒绝/超时/启动失败时出现。
 type execResult struct {
-	Stdout     string  `json:"stdout"`
-	Stderr     string  `json:"stderr"`
-	Returncode int     `json:"returncode"`
-	Error      *string `json:"error,omitempty"`
+	Stdout          string  `json:"stdout"`
+	Stderr          string  `json:"stderr"`
+	Returncode      int     `json:"returncode"`
+	Error           *string `json:"error,omitempty"`
+	Outcome         string  `json:"outcome"`
+	StdoutTruncated bool    `json:"stdout_truncated"`
+	StderrTruncated bool    `json:"stderr_truncated"`
 }
 
 // auditEntry 对应 ts recordAudit 的 JSON 键顺序与可空性:returncode/error 恒在。
@@ -85,9 +93,10 @@ func main() {
 
 	cfg := serverConfig{
 		// ALLOW_COMMANDS 环境变量维持 REPLACE 语义(整体替换,非并集)。
-		allow:     policy.AllocCommands(p),
-		auditPath: auditPath(p),
-		timeout:   shellpolicy.Timeout,
+		allow:          policy.AllocCommands(p),
+		auditPath:      auditPath(p),
+		timeout:        shellpolicy.Timeout,
+		maxOutputBytes: p.Shell.MaxOutputBytes,
 	}
 	server := newServer(cfg)
 
@@ -165,8 +174,9 @@ func newServer(cfg serverConfig) *mcp.Server {
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
-			// 与 ts 同:isError 由退出码决定。
-			IsError: res.Returncode != 0,
+			// 仅"被拒"与"超时"是 MCP 层错误;命令跑完但非零退出属于正常结果
+			// (outcome=ran_and_failed),由 outcome 而非 rc 决定 isError。
+			IsError: res.Outcome == shellpolicy.OutcomeDenied || res.Outcome == shellpolicy.OutcomeTimeout,
 		}, nil, nil
 	})
 
@@ -175,7 +185,8 @@ func newServer(cfg serverConfig) *mcp.Server {
 
 // shellExec 逐分支移植 shell_server.ts shellExec:先命令、后参数,任一验证失败
 // → 审计(allowed=false, 126)并返回 126;超时 → 124;启动失败 → 1;
-// 正常执行 → 实际退出码(后三者审计均为 allowed=true)。
+// 正常执行 → 实际退出码(后三者审计均为 allowed=true)。outcome 在各自返回点
+// 显式标注,不从 rc 反推:126 既是拒绝码,也可能是命令的真实退出码。
 func shellExec(ctx context.Context, cfg serverConfig, command string, args []string) execResult {
 	if args == nil {
 		args = []string{}
@@ -185,13 +196,13 @@ func shellExec(ctx context.Context, cfg serverConfig, command string, args []str
 	if err != nil {
 		return reject(cfg, command, args, "Command validation failed", err)
 	}
-	for _, arg := range args {
-		if err := shellpolicy.ValidateArg(arg); err != nil {
-			return reject(cfg, command, args, "Argument validation failed", err)
-		}
+	// ValidateArgs 在逐个路径校验之外还查按命令的拒绝参数表(如 journalctl -f),
+	// 单靠 ValidateArg 会漏掉"合法路径但会让命令挂住"的参数。
+	if err := shellpolicy.ValidateArgs(cmdToRun, args); err != nil {
+		return reject(cfg, command, args, "Argument validation failed", err)
 	}
 
-	res := execute(ctx, cfg.timeout, cmdToRun, args)
+	res := execute(ctx, cfg.timeout, cfg.maxOutputBytes, cmdToRun, args)
 	// execute 恰好在超时与启动失败时设置 Error 字段,直接以其作为 error 载荷
 	// 即与 ts 逐分支等价。
 	rc := res.Returncode
@@ -208,13 +219,52 @@ func reject(cfg serverConfig, command string, args []string, prefix string, caus
 		Stderr:     fmt.Sprintf("%s: %s", prefix, msg),
 		Returncode: rc,
 		Error:      &msg,
+		Outcome:    shellpolicy.OutcomeDenied,
 	}
+}
+
+// cappedBuffer 是带上限的 io.Writer:超过上限的字节静默丢弃并置 truncated,
+// 恒返回 len(p), nil —— 输出超限不是执行失败,也不能让子进程因写管道失败而中断。
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int64
+	truncated bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if c.limit <= 0 {
+		// 策略校验保证 >0;零值只在未注入时出现,此时按不限处理而非吞掉全部输出。
+		return c.buf.Write(p)
+	}
+	remain := c.limit - int64(c.buf.Len())
+	if remain <= 0 {
+		c.truncated = true
+		return len(p), nil
+	}
+	if int64(len(p)) > remain {
+		_, _ = c.buf.Write(p[:remain])
+		c.truncated = true
+		return len(p), nil
+	}
+	_, _ = c.buf.Write(p)
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// outcomeForExit 只用于"进程确实跑完"的分支:rc==0 → ok,否则 ran_and_failed。
+// 拒绝 / 超时 / 启动失败必须由各自返回点显式标注。
+func outcomeForExit(rc int) string {
+	if rc == 0 {
+		return shellpolicy.OutcomeOK
+	}
+	return shellpolicy.OutcomeRanAndFailed
 }
 
 // execute 用 os/exec 以 argv 直发运行命令(绝不经过 sh -c)。分支语义:成功
 // (含非零退出)回传真实退出码;截止到达 → 124;无法启动 → 1 + "Execution
-// failed: " 前缀。
-func execute(ctx context.Context, timeout time.Duration, cmdToRun string, args []string) execResult {
+// failed: " 前缀。stdout/stderr 各自最多保留 maxOutputBytes 字节。
+func execute(ctx context.Context, timeout time.Duration, maxOutputBytes int64, cmdToRun string, args []string) execResult {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -229,26 +279,43 @@ func execute(ctx context.Context, timeout time.Duration, cmdToRun string, args [
 	}
 	cmd.WaitDelay = waitGracePeriod
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &cappedBuffer{limit: maxOutputBytes}
+	stderr := &cappedBuffer{limit: maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	runErr := cmd.Run()
 
 	switch {
 	case runErr == nil:
-		return execResult{Stdout: stdout.String(), Stderr: stderr.String(), Returncode: cmd.ProcessState.ExitCode()}
+		rc := cmd.ProcessState.ExitCode()
+		return execResult{
+			Stdout:          stdout.String(),
+			Stderr:          stderr.String(),
+			Returncode:      rc,
+			Outcome:         outcomeForExit(rc),
+			StdoutTruncated: stdout.truncated,
+			StderrTruncated: stderr.truncated,
+		}
 
 	case errors.Is(execCtx.Err(), context.DeadlineExceeded):
 		// 与 ts 同:SIGKILL 后 stdout 丢弃,消息含超时秒数。
 		msg := fmt.Sprintf("Command timed out after %d seconds", int(timeout/time.Second))
-		return execResult{Stdout: "", Stderr: msg, Returncode: shellpolicy.TimeoutRejectionCode, Error: &msg}
+		return execResult{Stdout: "", Stderr: msg, Returncode: shellpolicy.TimeoutRejectionCode, Error: &msg, Outcome: shellpolicy.OutcomeTimeout}
 
 	default:
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) && exitErr.ExitCode() >= 0 {
 			// 正常退出但非零:与 ts 一致回传真实退出码,不判为错误分支。
-			return execResult{Stdout: stdout.String(), Stderr: stderr.String(), Returncode: exitErr.ExitCode()}
+			rc := exitErr.ExitCode()
+			return execResult{
+				Stdout:          stdout.String(),
+				Stderr:          stderr.String(),
+				Returncode:      rc,
+				Outcome:         outcomeForExit(rc),
+				StdoutTruncated: stdout.truncated,
+				StderrTruncated: stderr.truncated,
+			}
 		}
 		// 与 ts 外层 catch 同:启动/等待失败 → "Execution failed: ..." + 1。
 		msg := runErr.Error()
@@ -257,6 +324,7 @@ func execute(ctx context.Context, timeout time.Duration, cmdToRun string, args [
 			Stderr:     fmt.Sprintf("Execution failed: %s", msg),
 			Returncode: shellpolicy.ExecutionFailureCode,
 			Error:      &msg,
+			Outcome:    shellpolicy.OutcomeRanAndFailed,
 		}
 	}
 }

@@ -2,15 +2,22 @@
 # 前缀收缩为 /tmp、blocked 换成 /root、超时 5000ms。
 # 证明 shellpolicy 各包级值逐字跟随 policy.toml。
 [shell]
-allowed_commands = ["echo", "date"]
+# 白名单另含四个探针命令:false(真实退出码 1)、sleep(挂住 → 超时)、
+# ls(真实退出码 2)、journalctl(带拒绝参数 -f → 策略拒绝);
+# not-a-real-binary 不存在于 PATH,用于触发"进程启动失败"分支。
+allowed_commands = ["echo", "date", "false", "sleep", "ls", "journalctl", "not-a-real-binary"]
 binary_dirs = ["/usr/bin", "/bin"]
 allowed_path_prefixes = ["/tmp"]
 blocked_paths = ["/root"]
 clean_env = { PATH = "/usr/bin:/bin", LANG = "C" }
 timeout_ms = 5000
+# 输出上限刻意取小值(64 字节):stdout/stderr 超限即截断,该值让截断断言
+# 能在一条短命令上复现。
+max_output_bytes = 64
 
 [fs]
 allowed_dirs = ["/tmp"]
+max_read_bytes = 1048576
 
 [audit]
 log_path = "/tmp/daedalus-shell-policy-test-audit.jsonl"

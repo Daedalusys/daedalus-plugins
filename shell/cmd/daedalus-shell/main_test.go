@@ -23,9 +23,10 @@ import (
 func testConfig(t *testing.T, allowEnv string) serverConfig {
 	t.Helper()
 	return serverConfig{
-		allow:     shellpolicy.ResolveAllowCommands(allowEnv),
-		auditPath: mustCreateAuditFile(t),
-		timeout:   shellpolicy.Timeout,
+		allow:          shellpolicy.ResolveAllowCommands(allowEnv),
+		auditPath:      mustCreateAuditFile(t),
+		timeout:        shellpolicy.Timeout,
+		maxOutputBytes: policy.Default().Shell.MaxOutputBytes,
 	}
 }
 
@@ -210,6 +211,9 @@ func TestShellExec_Rejections(t *testing.T) {
 			if !isErr {
 				t.Fatalf("拒绝路径 isError=false: %+v", res)
 			}
+			if res.Outcome != shellpolicy.OutcomeDenied {
+				t.Errorf("outcome = %q, want denied", res.Outcome)
+			}
 			if res.Returncode != shellpolicy.ValidationRejectionCode {
 				t.Errorf("returncode = %d, want 126", res.Returncode)
 			}
@@ -241,10 +245,14 @@ func TestShellExec_RealCommands(t *testing.T) {
 		t.Errorf("成功路径不应带 error 字段: %v", res.Error)
 	}
 
-	// ls 不存在的路径 → GNU ls 真实退出码 2,原样透传(不是 126/1)。
+	// ls 不存在的路径 → GNU ls 真实退出码 2,原样透传(不是 126/1);
+	// 命令确实跑完,故不是 MCP error,outcome 为 ran_and_failed。
 	res, isErr = callShell(t, session, ctx, "ls", []string{"/tmp/definitely-missing-daedalus-test"})
-	if !isErr || res.Returncode != 2 {
+	if isErr || res.Returncode != 2 {
 		t.Fatalf("非零退出码透传失败: %+v", res)
+	}
+	if res.Outcome != shellpolicy.OutcomeRanAndFailed {
+		t.Errorf("outcome = %q, want ran_and_failed", res.Outcome)
 	}
 	if !strings.Contains(res.Stderr, "cannot access") && !strings.Contains(res.Stderr, "No such file") {
 		t.Errorf("ls stderr 异常: %q", res.Stderr)
@@ -257,6 +265,127 @@ func TestShellExec_RealCommands(t *testing.T) {
 	}
 }
 
+// loadPolicyFixture 载入 testdata 策略夹具并完成包级注入(applyPolicy 与 main
+// 同一条入口),返回策略供构造 cfg;测试结束还原 Default,避免污染同包用例。
+func loadPolicyFixture(t *testing.T, name string) *policy.Policy {
+	t.Helper()
+	t.Setenv(policy.EnvPolicyPath, filepath.Join("testdata", name))
+	p, err := applyPolicy()
+	if err != nil {
+		t.Fatalf("applyPolicy 加载 %s 失败: %v", name, err)
+	}
+	t.Cleanup(func() { shellpolicy.WithPolicy(policy.Default()) })
+	return p
+}
+
+// configFor 用已注入的策略构造服务器配置(审计落独立临时文件)。
+func configFor(t *testing.T, p *policy.Policy) serverConfig {
+	t.Helper()
+	return serverConfig{
+		allow:          policy.AllocCommands(p),
+		auditPath:      mustCreateAuditFile(t),
+		timeout:        shellpolicy.Timeout,
+		maxOutputBytes: p.Shell.MaxOutputBytes,
+	}
+}
+
+// TestShellExec_OutcomeMatrix 钉 outcome 四态与 isError 的映射:只有 denied 与
+// timeout 是 MCP error;false 的 rc=1 与启动失败同属 ran_and_failed,是正常结果。
+// 用短超时夹具,超时用例不必等满 5s。
+func TestShellExec_OutcomeMatrix(t *testing.T) {
+	p := loadPolicyFixture(t, "policy-fast-timeout.toml")
+	session, ctx := connectSession(t, configFor(t, p))
+
+	tests := []struct {
+		name        string
+		command     string
+		args        []string
+		wantOutcome string
+		wantRC      int
+		wantIsErr   bool
+		wantStderr  string // 非空则前缀断言
+	}{
+		{"ok", "echo", []string{"outcome-ok"}, shellpolicy.OutcomeOK, 0, false, ""},
+		{"真实非零退出码", "false", nil, shellpolicy.OutcomeRanAndFailed, 1, false, ""},
+		{"启动失败", "not-a-real-binary", nil, shellpolicy.OutcomeRanAndFailed, 1, false, "Execution failed:"},
+		{"命令不在白名单", "rm", []string{"-rf", "/"}, shellpolicy.OutcomeDenied, 126, true, "Command validation failed:"},
+		{"参数路径越界", "ls", []string{"/etc/shadow"}, shellpolicy.OutcomeDenied, 126, true, "Argument validation failed:"},
+		{"按命令拒绝参数表", "journalctl", []string{"-f"}, shellpolicy.OutcomeDenied, 126, true, "Argument validation failed:"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res, isErr := callShell(t, session, ctx, tc.command, tc.args)
+			if res.Outcome != tc.wantOutcome {
+				t.Errorf("outcome = %q, want %q", res.Outcome, tc.wantOutcome)
+			}
+			if res.Returncode != tc.wantRC {
+				t.Errorf("returncode = %d, want %d", res.Returncode, tc.wantRC)
+			}
+			if isErr != tc.wantIsErr {
+				t.Errorf("isError = %v, want %v(%+v)", isErr, tc.wantIsErr, res)
+			}
+			if tc.wantStderr != "" && !strings.HasPrefix(res.Stderr, tc.wantStderr) {
+				t.Errorf("stderr 前缀漂移: %q", res.Stderr)
+			}
+			if res.StdoutTruncated || res.StderrTruncated {
+				t.Errorf("短输出不应截断: %+v", res)
+			}
+		})
+	}
+
+	// 超时:挂住的 sleep 被进程组 SIGKILL,outcome=timeout 且是 MCP error。
+	res, isErr := callShell(t, session, ctx, "sleep", []string{"30"})
+	if !isErr || res.Outcome != shellpolicy.OutcomeTimeout || res.Returncode != 124 {
+		t.Fatalf("超时用例失败: isErr=%v %+v", isErr, res)
+	}
+	if res.Stdout != "" {
+		t.Errorf("超时后 stdout 应丢弃,得 %q", res.Stdout)
+	}
+	if !strings.HasPrefix(res.Stderr, "Command timed out after") {
+		t.Errorf("超时消息漂移: %q", res.Stderr)
+	}
+}
+
+// TestShellExec_OutputTruncated 钉输出上限语义:stdout / stderr 各自最多保留
+// max_output_bytes 字节,超出部分丢弃并置 truncated —— 不是错误,不中断执行。
+func TestShellExec_OutputTruncated(t *testing.T) {
+	p := loadPolicyFixture(t, "policy.toml")
+	cfg := configFor(t, p)
+	if cfg.maxOutputBytes != 64 {
+		t.Fatalf("夹具 max_output_bytes 应为 64,得 %d", cfg.maxOutputBytes)
+	}
+	session, ctx := connectSession(t, cfg)
+
+	// stdout 超限:echo 输出 200 个 a + 换行 = 201 字节,保留前 64 字节。
+	long := strings.Repeat("a", 200)
+	res, isErr := callShell(t, session, ctx, "echo", []string{long})
+	if isErr || res.Returncode != 0 || res.Outcome != shellpolicy.OutcomeOK {
+		t.Fatalf("截断不应改变成功语义: isErr=%v %+v", isErr, res)
+	}
+	if !res.StdoutTruncated || res.StderrTruncated {
+		t.Errorf("truncated 标记漂移: stdout=%v stderr=%v", res.StdoutTruncated, res.StderrTruncated)
+	}
+	if res.Stdout != long[:64] {
+		t.Errorf("stdout 应为前 64 字节,得 %d 字节", len(res.Stdout))
+	}
+
+	// stderr 超限:ls 多个不存在路径,stderr 远超 64 字节;真实退出码 2 仍透传。
+	missing := []string{
+		"/tmp/daedalus-missing-a", "/tmp/daedalus-missing-b",
+		"/tmp/daedalus-missing-c", "/tmp/daedalus-missing-d",
+	}
+	res, isErr = callShell(t, session, ctx, "ls", missing)
+	if isErr || res.Returncode != 2 || res.Outcome != shellpolicy.OutcomeRanAndFailed {
+		t.Fatalf("stderr 截断用例失败: isErr=%v %+v", isErr, res)
+	}
+	if !res.StderrTruncated || res.StdoutTruncated {
+		t.Errorf("truncated 标记漂移: stdout=%v stderr=%v", res.StdoutTruncated, res.StderrTruncated)
+	}
+	if len(res.Stderr) != 64 {
+		t.Errorf("stderr 应为 64 字节,得 %d", len(res.Stderr))
+	}
+}
+
 // TestShellExec_CleanEnvOnly 直接验证 execute 层:子进程环境恰为 CLEAN_ENV
 // 两项,零继承(HOME/USER/PATH 覆盖等一律不可见)。
 func TestShellExec_CleanEnvOnly(t *testing.T) {
@@ -264,7 +393,7 @@ func TestShellExec_CleanEnvOnly(t *testing.T) {
 		t.Skipf("无 /usr/bin/env: %v", err)
 	}
 	// "env" 不在白名单,验证层会拒;因此直测 execute(校验层与执行层解耦的接缝)。
-	res := execute(context.Background(), 10*time.Second, "/usr/bin/env", nil)
+	res := execute(context.Background(), 10*time.Second, policy.Default().Shell.MaxOutputBytes, "/usr/bin/env", nil)
 	if res.Returncode != 0 {
 		t.Fatalf("env 执行失败: %+v", res)
 	}
@@ -288,11 +417,15 @@ func TestShellExec_ProcessGroupTimeout(t *testing.T) {
 	res := execute(
 		context.Background(),
 		time.Second,
+		policy.Default().Shell.MaxOutputBytes,
 		"/usr/bin/sh",
 		[]string{"-c", "sleep " + marker + " & sleep " + marker + " & wait"},
 	)
 	if res.Returncode != shellpolicy.TimeoutRejectionCode {
 		t.Fatalf("超时 returncode = %d, want 124 (%+v)", res.Returncode, res)
+	}
+	if res.Outcome != shellpolicy.OutcomeTimeout {
+		t.Errorf("outcome = %q, want timeout", res.Outcome)
 	}
 	if !strings.Contains(res.Stderr, "Command timed out after 1 seconds") {
 		t.Errorf("超时消息漂移: %q", res.Stderr)
@@ -429,9 +562,10 @@ func TestShellExec_AuditLines(t *testing.T) {
 // 与新哈希链格式不兼容;若保留旧行为,daedalus-shell 的工具调用永远断链)。
 func TestRecordAudit_CreatesFileAndChainsHash(t *testing.T) {
 	cfg := serverConfig{
-		allow:     shellpolicy.ResolveAllowCommands(""),
-		auditPath: filepath.Join(t.TempDir(), "created-on-demand.jsonl"),
-		timeout:   shellpolicy.Timeout,
+		allow:          shellpolicy.ResolveAllowCommands(""),
+		auditPath:      filepath.Join(t.TempDir(), "created-on-demand.jsonl"),
+		timeout:        shellpolicy.Timeout,
+		maxOutputBytes: policy.Default().Shell.MaxOutputBytes,
 	}
 	res := shellExec(context.Background(), cfg, "uname", []string{"-s"})
 	if res.Returncode != 0 {
@@ -475,9 +609,10 @@ func TestPolicyInjection_FollowsPolicyToml(t *testing.T) {
 	}
 
 	cfg := serverConfig{
-		allow:     policy.AllocCommands(p),
-		auditPath: mustCreateAuditFile(t),
-		timeout:   shellpolicy.Timeout,
+		allow:          policy.AllocCommands(p),
+		auditPath:      mustCreateAuditFile(t),
+		timeout:        shellpolicy.Timeout,
+		maxOutputBytes: p.Shell.MaxOutputBytes,
 	}
 	res := shellExec(context.Background(), cfg, "uname", nil)
 	if res.Returncode != shellpolicy.ValidationRejectionCode {
@@ -504,7 +639,7 @@ func TestPolicyInjection_AllowCommandsEnvReplacesPolicy(t *testing.T) {
 	if len(allow) != 1 {
 		t.Fatalf("env 应整体替换为 1 项, got %v", allow)
 	}
-	cfg := serverConfig{allow: allow, auditPath: mustCreateAuditFile(t), timeout: shellpolicy.Timeout}
+	cfg := serverConfig{allow: allow, auditPath: mustCreateAuditFile(t), timeout: shellpolicy.Timeout, maxOutputBytes: p.Shell.MaxOutputBytes}
 	if res := shellExec(context.Background(), cfg, "echo", nil); res.Returncode != shellpolicy.ValidationRejectionCode {
 		t.Errorf("被 env 替换掉的 echo 应拒绝: %+v", res)
 	}
@@ -525,7 +660,7 @@ func TestPolicyInjection_CorruptRefusesStartup(t *testing.T) {
 
 // TestPolicyInjection_MissingFailClosed 固定缺失语义:无 policy.toml 时
 // LoadOrDefault 默认 fail-closed 拒绝启动;仅 DAEDALUS_POLICY_MODE=development
-// 显式 opt-in 才回退 Default,回退结果与现状硬编码常量一致(15 命令)。
+// 显式 opt-in 才回退 Default,回退结果与现状硬编码常量一致(16 命令)。
 func TestPolicyInjection_MissingFailClosed(t *testing.T) {
 	t.Setenv(policy.EnvPolicyPath, filepath.Join(t.TempDir(), "absent.toml"))
 	// 显式指向不存在 → 硬错误(不静默降级):
@@ -547,7 +682,7 @@ func TestPolicyInjection_MissingFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("development opt-in 应回退 Default: %v", err)
 	}
-	if len(p.Shell.AllowedCommands) != 15 {
-		t.Fatalf("Default 命令数 = %d, want 15", len(p.Shell.AllowedCommands))
+	if len(p.Shell.AllowedCommands) != 16 {
+		t.Fatalf("Default 命令数 = %d, want 16", len(p.Shell.AllowedCommands))
 	}
 }

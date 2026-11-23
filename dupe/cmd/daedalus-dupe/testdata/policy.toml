@@ -7,9 +7,13 @@ allowed_path_prefixes = ["/tmp"]
 blocked_paths = ["/root"]
 clean_env = { PATH = "/usr/bin:/bin", LANG = "C" }
 timeout_ms = 1000
+# 命令输出上限(字节;stdout 与 stderr 各自计数,超出即截断)。
+max_output_bytes = 1048576
 
 [fs]
 allowed_dirs = ["/tmp"]
+# 单次文件读取上限(字节;超出即截断)。
+max_read_bytes = 1048576
 
 [audit]
 log_path = "/tmp/daedalus-fs-policy-test-audit.jsonl"

@@ -1,0 +1,41 @@
+# daedalus-shell 注入测试夹具(快超时变体):与 policy.toml 逐字同源,
+# 仅把 [shell].timeout_ms 收紧到 500ms —— 超时用例不必等满 5s。
+# 其余字段(白名单/前缀/blocked/输出上限)与 policy.toml 完全一致,
+# 使 outcome 矩阵用例的语义与主夹具对齐。
+[shell]
+allowed_commands = ["echo", "date", "false", "sleep", "ls", "journalctl", "not-a-real-binary"]
+binary_dirs = ["/usr/bin", "/bin"]
+allowed_path_prefixes = ["/tmp"]
+blocked_paths = ["/root"]
+clean_env = { PATH = "/usr/bin:/bin", LANG = "C" }
+timeout_ms = 500
+max_output_bytes = 64
+
+[fs]
+allowed_dirs = ["/tmp"]
+max_read_bytes = 1048576
+
+[audit]
+log_path = "/tmp/daedalus-shell-policy-test-audit.jsonl"
+max_size_mb = 256
+retain_days = 30
+
+[objectmodel]
+enabled_kinds = ["service"]
+
+[blueprints]
+output_dirs = ["/etc/nginx/conf.d", "/etc/haproxy", "/etc/postgresql", "/etc/redis"]
+post_check_commands = ["nginx", "haproxy", "psql", "redis-cli", "sudo"]
+reload_services = ["nginx", "haproxy", "postgresql", "redis"]
+secret_sources = ["kwallet", "credstore"]
+
+[state]
+max_size_mb = 64
+
+[fleet]
+high_risk_packages = ["kernel", "systemd", "dbus", "NetworkManager", "selinux", "polkit", "openssh"]
+high_risk_path_prefixes = ["/etc", "/boot", "/usr", "/var/lib"]
+high_risk_services = ["systemd", "dbus", "NetworkManager", "sshd"]
+high_risk_adapters = ["bootc.switch", "bootc.upgrade", "bootc.rollback"]
+transient_retry_max = 3
+heartbeat_timeout_seconds = 30
