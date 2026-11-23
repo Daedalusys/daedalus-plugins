@@ -78,10 +78,15 @@ func main() {
 	}
 }
 
+// policyMaxReadBytes 是启动期 applyPolicy 捕获的策略 [fs].max_read_bytes,
+// read_file 单次返回的正文上限。生产路径必然经 applyPolicy 且策略校验要求 >0;
+// 0 只出现在未加载策略的单元测试里,此时退回整读语义(见 readCapped)。
+var policyMaxReadBytes int64
+
 // applyPolicy 加载策略(缺失默认 fail-closed,development opt-in 才回退
-// Default)并把 [fs].allowed_dirs 注入 pathguard 包级白名单。与测试共用同一
-// 入口:测试经 DAEDALUS_POLICY_PATH 环境变量指向 testdata 后调用本函数即可
-// 演练白名单跟随。
+// Default)并把 [fs].allowed_dirs 注入 pathguard 包级白名单、把
+// [fs].max_read_bytes 注入读取上限。与测试共用同一入口:测试经
+// DAEDALUS_POLICY_PATH 环境变量指向 testdata 后调用本函数即可演练白名单跟随。
 func applyPolicy() error {
 	p, err := policy.LoadOrDefault()
 	if err != nil {
@@ -89,6 +94,7 @@ func applyPolicy() error {
 	}
 	pathguard.WithAllowedDirs(p.FS.AllowedDirs)
 	policyAuditLogPath = p.Audit.LogPath
+	policyMaxReadBytes = p.FS.MaxReadBytes
 	return nil
 }
 
@@ -183,11 +189,53 @@ func readFileResult(in readFileIn) (*mcp.CallToolResult, string, error) {
 		e := fmt.Errorf("Target is a directory, not a file: %s", in.Path)
 		return toolError(e), "denied", e
 	}
-	data, err := os.ReadFile(safePath)
+	data, truncated, err := readCapped(safePath, info.Size())
 	if err != nil {
 		return toolError(err), "error", err
 	}
+	if truncated {
+		// 截断头是机器可解析的一行,调用方据此判断"拿到的不是全文";
+		// 未截断路径不加任何标记,保持与改动前逐字相同。
+		header := fmt.Sprintf("daedalus: truncated=true total_bytes=%d read_bytes=%d\n", info.Size(), len(data))
+		return textResult(header + string(data)), "success", nil
+	}
 	return textResult(string(data)), "success", nil
+}
+
+// readCapped 至多读 policyMaxReadBytes 字节,并按文件总大小判断是否截断。
+//
+// 不整读的理由:超大文件整读会把插件进程的内存按文件大小放大,而 MCP 回包
+// 终究要序列化进内存。截断判定用 Stat 的 Size 而非"是否读满缓冲区",因为
+// 恰好等于上限的文件不算截断。
+//
+// 策略未注入(<=0)时退回整读:此时非生产路径,且不给上限会让"策略忘了加载"
+// 静默变成"读全文",故只在单测场景出现。
+func readCapped(safePath string, size int64) (data []byte, truncated bool, err error) {
+	if policyMaxReadBytes <= 0 {
+		data, err = os.ReadFile(safePath)
+		return data, false, err
+	}
+	readLen := policyMaxReadBytes
+	if size >= 0 && size < readLen {
+		// 文件确定小于上限:按实际大小开缓冲,避免为小文件分配整块上限。
+		readLen = size
+	}
+	f, err := os.Open(safePath)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close() // 只读句柄,关闭失败不影响已读到的内容。
+
+	buf := make([]byte, readLen)
+	n, err := io.ReadFull(f, buf)
+	switch {
+	case err == nil:
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		// 文件在 Stat 之后变短,或缓冲恰为上限而文件更小:读出多少算多少。
+	default:
+		return nil, false, err
+	}
+	return buf[:n], size > int64(n), nil
 }
 
 // handleWriteFile 移植 fs_server.ts 的 writeFileTool。变更型工具 fail-closed:
