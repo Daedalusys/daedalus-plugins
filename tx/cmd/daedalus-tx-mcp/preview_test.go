@@ -23,9 +23,11 @@ allowed_path_prefixes = ["/tmp"]
 blocked_paths = ["/etc/shadow"]
 clean_env = { PATH = "/usr/bin:/bin" }
 timeout_ms = 1000
+max_output_bytes = 1048576
 
 [fs]
 allowed_dirs = ["/tmp"]
+max_read_bytes = 1048576
 
 [audit]
 log_path = "/tmp/audit.jsonl"
