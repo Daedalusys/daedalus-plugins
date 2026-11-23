@@ -8,7 +8,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,12 +62,14 @@ type procTreeView struct {
 }
 
 type procFdsView struct {
-	ProcRoot   string    `json:"proc_root"`
-	PID        int       `json:"pid"`
-	Kinds      []string  `json:"kinds,omitempty"`
-	Entries    []fdEntry `json:"entries"`
-	Total      int       `json:"total"`
-	Unreadable int       `json:"unreadable"`
+	ProcRoot     string    `json:"proc_root"`
+	PID          int       `json:"pid"`
+	Kinds        []string  `json:"kinds,omitempty"`
+	Entries      []fdEntry `json:"entries"`
+	Total        int       `json:"total"`
+	Unreadable   int       `json:"unreadable"`
+	Denied       bool      `json:"denied"`
+	DeniedReason string    `json:"denied_reason,omitempty"`
 }
 
 type procListenView struct {
@@ -190,7 +194,14 @@ func procFdsResult(_ context.Context, in procFdsIn) (*mcp.CallToolResult, string
 	}
 	entries, unreadable, err := scanProcFDs(root, in.PID, in.Kinds)
 	if err != nil {
-		return raisedError(toolName, err), "error", err
+		// 他人进程的 /proc/<pid>/fd 不可读是常态(插件以非 root 运行)。此时返回
+		// 空视图 + denied 标记,让调用方区分「没有 fd」与「读不到」,而不是整体失败;
+		// 其余故障(pid 不存在等)仍然报错。
+		if !errors.Is(err, fs.ErrPermission) {
+			return raisedError(toolName, err), "error", err
+		}
+		return jsonResult(procFdsView{ProcRoot: root, PID: in.PID, Kinds: in.Kinds,
+			Entries: []fdEntry{}, Denied: true, DeniedReason: err.Error()}), "success", nil
 	}
 	return jsonResult(procFdsView{ProcRoot: root, PID: in.PID, Kinds: in.Kinds,
 		Entries: entries, Total: len(entries), Unreadable: unreadable}), "success", nil
