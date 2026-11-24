@@ -99,7 +99,7 @@ jobs:
         # 各 sub-module 与 core 的 go.mod pins `go 1.26.0`;runner image 可能更老,显式 pin。
         # setup-go 会设 GOTOOLCHAIN=local,所以这里的版本必须 >= 被构建模块的 go 指令。
         # 钉精确版本而非 1.26.x:浮动 patch 会让同一 tag 重建出的二进制(进 zip)字节不同。
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '${{ env.GO_VERSION }}'
           # 本 workflow 只由 tag push / workflow_dispatch 触发,不接受 PR ——
